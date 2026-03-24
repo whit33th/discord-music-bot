@@ -7,6 +7,7 @@ import { YoutubeiExtractor } from 'discord-player-youtubei';
 export async function createPlayer(client: Client) {
     const player = new Player(client);
     const youtubeExtractor = (process.env.YOUTUBE_EXTRACTOR ?? 'youtubei').toLowerCase();
+    const youtubeiUseDl = (process.env.YOUTUBE_USE_YTDL ?? 'true').toLowerCase() === 'true';
 
     if (youtubeExtractor === 'googlevideo') {
         await player.extractors.register(YoutubeSabrExtractor, {});
@@ -14,10 +15,16 @@ export async function createPlayer(client: Client) {
         await player.extractors.register(YoutubeiExtractor, {
             cookie: process.env.YOUTUBE_COOKIE,
             generateWithPoToken: process.env.YOUTUBE_GENERATE_PO_TOKEN === 'true',
+            disablePlayer: true,
+            overrideBridgeMode: 'yt',
             streamOptions: {
+                useClient: 'ANDROID',
                 highWaterMark: 1 << 25,
             },
-        });
+            // Hidden runtime option supported by discord-player-youtubei.
+            useYoutubeDL: youtubeiUseDl,
+            logLevel: 'NONE',
+        } as any);
     }
 
     await player.extractors.register(SoundCloudExtractor, {});
