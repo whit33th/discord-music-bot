@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { Client, Collection, Events, GatewayIntentBits, MessageFlags } from 'discord.js';
+import { DependencyReportGenerator } from 'discord-player';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -27,8 +28,35 @@ const client = new Client({
 const player = await createPlayer(client);
 attachPlayerEvents(player);
 
+function getPreferredOpusBackend() {
+    const report = DependencyReportGenerator.generate();
+
+    if (report.libopus['@discordjs/opus']) {
+        return `@discordjs/opus ${report.libopus['@discordjs/opus']}`;
+    }
+
+    if (report.libopus['@evan/opus']) {
+        return `@evan/opus ${report.libopus['@evan/opus']}`;
+    }
+
+    if (report.libopus['node-opus']) {
+        return `node-opus ${report.libopus['node-opus']}`;
+    }
+
+    if (report.libopus.opusscript) {
+        return `opusscript ${report.libopus.opusscript}`;
+    }
+
+    if (report.libopus.mediaplex) {
+        return `mediaplex ${report.libopus.mediaplex}`;
+    }
+
+    return 'none';
+}
+
 client.once(Events.ClientReady, (readyClient) => {
     console.log(`Ready! Logged in as ${readyClient.user.tag}`);
+    console.log(`[audio] opus backend: ${getPreferredOpusBackend()}`);
 });
 
 client.commands = new Collection();
