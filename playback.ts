@@ -23,7 +23,6 @@ const PAGE_SIZE = 8;
 const LYRICS_PAGE_SIZE = 14;
 const VOLUME_STEP = 10;
 const SEEK_STEP_MS = 10_000;
-const START_FADE_MS = 220;
 const SEEK_FADE_OUT_MS = 90;
 const SEEK_FADE_IN_MS = 160;
 const FADE_STEPS = 6;
@@ -47,6 +46,7 @@ const EMOJI_LYRICS = '\u{1F3A4}';
 const EMOJI_EFFECTS = '\u{1F39B}\uFE0F';
 const EMOJI_FAVORITES = '\u2B50';
 const EMOJI_CLOSE = '\u2716\uFE0F';
+const EMOJI_REMOVE = '\u{1F5D1}\uFE0F';
 const EMOJI_BASS = '\u{1F50A}';
 const EMOJI_NIGHTCORE = '\u{1F525}';
 const EMOJI_8D = '\u{1F300}';
@@ -577,7 +577,7 @@ function buildFavoritesPanelPayload(queue: GuildQueue<PlaybackMetadata>, favorit
             createIconButton(`${PANEL_PREFIX}:favorites:page:1:${state.page}:${state.selectedIndex}`, ICON_PAGE_NEXT, state.page >= totalPages - 1 || favorites.length === 0),
             createControlButton(`${PANEL_PREFIX}:favorites:save:${state.page}:${state.selectedIndex}`, 'Save Current', EMOJI_FAVORITES, !queue.currentTrack),
             createControlButton(`${PANEL_PREFIX}:favorites:queue:${state.page}:${state.selectedIndex}`, 'Queue Selected', EMOJI_QUEUE, state.selectedIndex < 0),
-            createControlButton(`${PANEL_PREFIX}:favorites:remove:${state.page}:${state.selectedIndex}`, 'Remove', ICON_QUEUE_REMOVE, state.selectedIndex < 0),
+            createControlButton(`${PANEL_PREFIX}:favorites:remove:${state.page}:${state.selectedIndex}`, 'Remove', EMOJI_REMOVE, state.selectedIndex < 0),
         ),
         new ActionRowBuilder<ButtonBuilder>().addComponents(
             createControlButton(`${PANEL_PREFIX}:menu`, 'Back', EMOJI_MORE),
@@ -730,16 +730,6 @@ async function fadeQueueVolume(queue: GuildQueue, from: number, to: number, dura
     } finally {
         fadingQueues.delete(guildId);
     }
-}
-
-async function softenTrackStart(queue: GuildQueue<PlaybackMetadata>) {
-    const targetVolume = clampVolume(getQueueVolume(queue));
-    if (targetVolume <= 0) return;
-
-    const startVolume = Math.min(8, targetVolume);
-    if (startVolume >= targetVolume) return;
-
-    await fadeQueueVolume(queue, startVolume, targetVolume, START_FADE_MS);
 }
 
 async function fetchLyricsView(player: Player, queue: GuildQueue<PlaybackMetadata>): Promise<LyricsView> {
@@ -964,10 +954,20 @@ async function handleEffectsButtonAction(interaction: ButtonInteraction, player:
     const [, , panel, action, effect] = interaction.customId.split(':');
     if (panel !== 'effects' || action !== 'apply') return false;
 
-    await interaction.deferUpdate();
-    await setEffect(queue as GuildQueue<PlaybackMetadata>, effect as EffectKey | 'clear');
-    await interaction.editReply(buildEffectsPanelPayload(queue as GuildQueue<PlaybackMetadata>));
-    await syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false);
+    await interaction.deferUpdate().catch(() => null);
+
+    try {
+        await setEffect(queue as GuildQueue<PlaybackMetadata>, effect as EffectKey | 'clear');
+        await interaction.editReply(buildEffectsPanelPayload(queue as GuildQueue<PlaybackMetadata>)).catch(() => null);
+        await syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false);
+    } catch (error) {
+        console.error('[effects-panel]', error);
+        await interaction.followUp({
+            content: error instanceof Error ? error.message : 'Could not apply the audio effect.',
+            flags: MessageFlags.Ephemeral,
+        }).catch(() => null);
+    }
+
     return true;
 }
 
@@ -1111,7 +1111,6 @@ export async function playTrack({ player, member, query, textChannel, requestedB
 export function attachPlayerEvents(player: Player) {
     player.events.on('playerStart', (queue) => {
         lyricsCache.delete(queue.currentTrack?.url ?? '');
-        void softenTrackStart(queue as GuildQueue<PlaybackMetadata>).catch(() => null);
         void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, true, true);
     });
 
