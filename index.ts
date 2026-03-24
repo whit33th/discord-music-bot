@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { Client, Collection, Events, GatewayIntentBits, MessageFlags } from 'discord.js';
+import { ActivityType, Client, Collection, Events, GatewayIntentBits, MessageFlags } from 'discord.js';
 import { DependencyReportGenerator } from 'discord-player';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -63,6 +63,7 @@ function hasYtDlpCookieFile() {
 }
 
 client.once(Events.ClientReady, (readyClient) => {
+    readyClient.user.setActivity('/play', { type: ActivityType.Listening });
     console.log(`Ready! Logged in as ${readyClient.user.tag}`);
     console.log(`[audio] opus backend: ${getPreferredOpusBackend()}`);
     console.log(`[audio] yt-dlp: ${isYoutubeDlEnabled() ? 'enabled' : 'disabled'}`);

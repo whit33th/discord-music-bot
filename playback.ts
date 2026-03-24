@@ -12,30 +12,71 @@ import {
     type StringSelectMenuInteraction,
     type User,
 } from 'discord.js';
-import { QueryType, QueueRepeatMode, type GuildQueue, type Player, type Track } from 'discord-player';
+import { QueryType, QueueRepeatMode, type GuildQueue, type LrcSearchResult, type Player, type Track } from 'discord-player';
+import { listFavorites, removeFavorite, saveFavorite, type FavoriteEntry } from './favorites';
 
 const BOT_BUSY_ERROR = 'BOT_BUSY_IN_ANOTHER_CHANNEL';
 const CONTROL_PREFIX = 'musicctl';
-const QUEUE_PREFIX = 'queuectl';
+const PANEL_PREFIX = 'musicpanel';
 const EMBED_COLOR = 0x2c2c2e;
 const PAGE_SIZE = 8;
+const LYRICS_PAGE_SIZE = 14;
+const VOLUME_STEP = 10;
+const SEEK_STEP_MS = 10_000;
+const START_FADE_MS = 220;
+const SEEK_FADE_OUT_MS = 90;
+const SEEK_FADE_IN_MS = 160;
+const FADE_STEPS = 6;
+const GOOGLEVIDEO_EXTRACTOR_ID = 'ext:com.github.xxczaki.youtube-sabr';
+const YOUTUBEI_EXTRACTOR_ID = 'ext:com.retrouser955.discord-player.discord-player-youtubei';
 
-const EMOJI_PREV = '\u23EE\uFE0F';
+const EMOJI_VOLUME_DOWN = '\u{1F509}';
+const EMOJI_VOLUME_UP = '\u{1F50A}';
+const EMOJI_SEEK_BACK = '\u23EA';
+const EMOJI_SEEK_FORWARD = '\u23E9';
 const EMOJI_PLAY = '\u25B6\uFE0F';
 const EMOJI_PAUSE = '\u23F8\uFE0F';
-const EMOJI_NEXT = '\u23ED\uFE0F';
-const EMOJI_QUEUE = '\u{1F4CB}';
+const EMOJI_STOP = '\u23F9\uFE0F';
+const EMOJI_SHUFFLE = '\u{1F500}';
 const EMOJI_LOOP_TRACK = '\u{1F502}';
 const EMOJI_LOOP_QUEUE = '\u{1F501}';
-const EMOJI_SHUFFLE = '\u{1F500}';
+const EMOJI_AUTOPLAY = '\u{1F4FB}';
+const EMOJI_MORE = '\u2728';
+const EMOJI_QUEUE = '\u{1F4CB}';
+const EMOJI_LYRICS = '\u{1F3A4}';
+const EMOJI_EFFECTS = '\u{1F39B}\uFE0F';
+const EMOJI_FAVORITES = '\u2B50';
+const EMOJI_CLOSE = '\u2716\uFE0F';
+const EMOJI_BASS = '\u{1F50A}';
+const EMOJI_NIGHTCORE = '\u{1F525}';
+const EMOJI_8D = '\u{1F300}';
+const EMOJI_CLEAR = '\u{1F9F9}';
 
 const ICON_QUEUE_MOVE_UP = '\u2191';
 const ICON_QUEUE_MOVE_DOWN = '\u2193';
 const ICON_QUEUE_REMOVE = '\u2212';
 const ICON_PAGE_PREV = '\u2039';
 const ICON_PAGE_NEXT = '\u203A';
-const GOOGLEVIDEO_EXTRACTOR_ID = 'ext:com.github.xxczaki.youtube-sabr';
-const YOUTUBEI_EXTRACTOR_ID = 'ext:com.retrouser955.discord-player.discord-player-youtubei';
+
+const EFFECT_FILTERS = {
+    bassboost: {
+        label: 'Bass',
+        emoji: EMOJI_BASS,
+        filter: 'bassboost',
+    },
+    nightcore: {
+        label: 'Nightcore',
+        emoji: EMOJI_NIGHTCORE,
+        filter: 'nightcore',
+    },
+    '8D': {
+        label: '8D',
+        emoji: EMOJI_8D,
+        filter: '8D',
+    },
+} as const;
+
+type EffectKey = keyof typeof EFFECT_FILTERS;
 
 type PlaybackMetadata = {
     textChannel: GuildTextBasedChannel;
@@ -60,6 +101,15 @@ type QueueManagerState = {
     page: number;
     selectedIndex: number;
 };
+
+type LyricsView = {
+    pages: string[];
+    currentLine: string | null;
+    source: 'synced' | 'plain';
+};
+
+const lyricsCache = new Map<string, LyricsView>();
+const fadingQueues = new Set<string>();
 
 function isPlaybackMetadata(value: unknown): value is PlaybackMetadata {
     return typeof value === 'object'
@@ -99,6 +149,14 @@ function getQueueTracks(queue: GuildQueue) {
     return queue.tracks.toArray();
 }
 
+function getQueueVolume(queue: GuildQueue) {
+    return Math.round(queue.node.volume || 0);
+}
+
+function isAutoplayEnabled(queue: GuildQueue) {
+    return queue.repeatMode === QueueRepeatMode.AUTOPLAY;
+}
+
 function getLoopButtonLabel(mode: number) {
     if (mode === QueueRepeatMode.TRACK) return 'Loop Track';
     if (mode === QueueRepeatMode.QUEUE) return 'Loop Queue';
@@ -106,7 +164,8 @@ function getLoopButtonLabel(mode: number) {
 }
 
 function getLoopEmoji(mode: number) {
-    return mode === QueueRepeatMode.TRACK ? EMOJI_LOOP_TRACK : EMOJI_LOOP_QUEUE;
+    if (mode === QueueRepeatMode.TRACK) return EMOJI_LOOP_TRACK;
+    return EMOJI_LOOP_QUEUE;
 }
 
 function getShuffleButtonLabel(enabled: boolean) {
@@ -116,7 +175,6 @@ function getShuffleButtonLabel(enabled: boolean) {
 function getRepeatLabel(mode: number) {
     if (mode === QueueRepeatMode.TRACK) return 'Track';
     if (mode === QueueRepeatMode.QUEUE) return 'Queue';
-    if (mode === QueueRepeatMode.AUTOPLAY) return 'Autoplay';
     return 'Off';
 }
 
@@ -124,18 +182,16 @@ function clamp(value: number, min: number, max: number) {
     return Math.min(Math.max(value, min), max);
 }
 
-function normalizeQueueState(queue: GuildQueue, page: number, selectedIndex: number): QueueManagerState {
-    const tracks = getQueueTracks(queue);
-
-    if (tracks.length === 0) {
+function normalizeSelection(totalItems: number, page: number, selectedIndex: number, pageSize: number): QueueManagerState {
+    if (totalItems === 0) {
         return { page: 0, selectedIndex: -1 };
     }
 
-    const totalPages = Math.max(1, Math.ceil(tracks.length / PAGE_SIZE));
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
     const safePage = clamp(page, 0, totalPages - 1);
-    const pageStart = safePage * PAGE_SIZE;
-    const pageEnd = Math.min(pageStart + PAGE_SIZE - 1, tracks.length - 1);
-    const initialSelectedIndex = selectedIndex < 0 ? pageStart : clamp(selectedIndex, 0, tracks.length - 1);
+    const pageStart = safePage * pageSize;
+    const pageEnd = Math.min(pageStart + pageSize - 1, totalItems - 1);
+    const initialSelectedIndex = selectedIndex < 0 ? pageStart : clamp(selectedIndex, 0, totalItems - 1);
     const safeSelectedIndex = initialSelectedIndex < pageStart || initialSelectedIndex > pageEnd
         ? pageStart
         : initialSelectedIndex;
@@ -144,6 +200,55 @@ function normalizeQueueState(queue: GuildQueue, page: number, selectedIndex: num
         page: safePage,
         selectedIndex: safeSelectedIndex,
     };
+}
+
+function canSeek(track: Track | null) {
+    return Boolean(track && track.seekable && !track.live && track.durationMS > 0);
+}
+
+function formatTimestamp(ms: number) {
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
+function delay(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function chunkLines(lines: string[], size: number) {
+    const sanitized = lines
+        .map((line) => line.trimEnd())
+        .filter((line) => line.trim().length > 0);
+
+    if (sanitized.length === 0) {
+        return ['Nothing to show.'];
+    }
+
+    const pages: string[] = [];
+
+    for (let index = 0; index < sanitized.length; index += size) {
+        pages.push(sanitized.slice(index, index + size).join('\n'));
+    }
+
+    return pages;
+}
+
+function getActiveEffect(queue: GuildQueue): EffectKey | null {
+    for (const effect of Object.keys(EFFECT_FILTERS) as EffectKey[]) {
+        const filter = EFFECT_FILTERS[effect].filter;
+        if (queue.filters.ffmpeg.isEnabled(filter)) {
+            return effect;
+        }
+    }
+
+    return null;
+}
+
+function getEffectLabel(queue: GuildQueue) {
+    const activeEffect = getActiveEffect(queue);
+    return activeEffect ? EFFECT_FILTERS[activeEffect].label : 'Off';
 }
 
 function createIconButton(customId: string, label: string, disabled = false) {
@@ -166,18 +271,24 @@ function createControlButton(customId: string, label: string, emoji: string, dis
 function buildControls(queue: GuildQueue<PlaybackMetadata>) {
     const hasTrack = Boolean(queue.currentTrack);
     const queueTracks = getQueueTracks(queue);
-    const hasEditableQueue = queueTracks.length > 0;
+    const canSeekTrack = canSeek(queue.currentTrack);
+    const hasVoiceSession = Boolean(queue.channel);
+    const hasPlayableContext = hasVoiceSession || hasTrack || queueTracks.length > 0;
 
     return [
         new ActionRowBuilder<ButtonBuilder>().addComponents(
-            createControlButton(`${CONTROL_PREFIX}:prev`, 'Prev', EMOJI_PREV, !hasTrack || !queue.history.previousTrack),
+            createControlButton(`${CONTROL_PREFIX}:volume_down`, 'Vol -10', EMOJI_VOLUME_DOWN, !hasPlayableContext),
+            createControlButton(`${CONTROL_PREFIX}:seek_back`, 'Seek -10', EMOJI_SEEK_BACK, !canSeekTrack),
             createControlButton(`${CONTROL_PREFIX}:toggle`, isQueuePaused(queue) ? 'Play' : 'Pause', isQueuePaused(queue) ? EMOJI_PLAY : EMOJI_PAUSE, !hasTrack),
-            createControlButton(`${CONTROL_PREFIX}:next`, 'Next', EMOJI_NEXT, !hasTrack),
-            createControlButton(`${CONTROL_PREFIX}:queue`, 'Queue', EMOJI_QUEUE, !hasTrack && !hasEditableQueue),
+            createControlButton(`${CONTROL_PREFIX}:seek_forward`, 'Seek +10', EMOJI_SEEK_FORWARD, !canSeekTrack),
+            createControlButton(`${CONTROL_PREFIX}:volume_up`, 'Vol +10', EMOJI_VOLUME_UP, !hasPlayableContext),
         ),
         new ActionRowBuilder<ButtonBuilder>().addComponents(
+            createControlButton(`${CONTROL_PREFIX}:shuffle`, getShuffleButtonLabel(queue.isShuffling), EMOJI_SHUFFLE, !hasTrack || queueTracks.length === 0),
             createControlButton(`${CONTROL_PREFIX}:loop`, getLoopButtonLabel(queue.repeatMode), getLoopEmoji(queue.repeatMode), !hasTrack),
-            createControlButton(`${CONTROL_PREFIX}:shuffle`, getShuffleButtonLabel(queue.isShuffling), EMOJI_SHUFFLE, !hasTrack || !hasEditableQueue),
+            createControlButton(`${CONTROL_PREFIX}:stop`, 'Stop', EMOJI_STOP, !hasTrack && queueTracks.length === 0),
+            createControlButton(`${CONTROL_PREFIX}:autoplay`, isAutoplayEnabled(queue) ? 'Autoplay On' : 'Autoplay Off', EMOJI_AUTOPLAY, !hasTrack),
+            createControlButton(`${CONTROL_PREFIX}:more`, 'More', EMOJI_MORE, !hasPlayableContext),
         ),
     ];
 }
@@ -191,16 +302,16 @@ function buildControlEmbed(queue: GuildQueue<PlaybackMetadata>) {
             .setTitle('Playback Idle')
             .setDescription('Start another track with `/play`.')
             .addFields(
-                { name: 'Queue', value: '0 waiting', inline: true },
+                { name: 'Queue', value: `${queue.size} waiting`, inline: true },
+                { name: 'Volume', value: `${getQueueVolume(queue)}%`, inline: true },
                 { name: 'Loop', value: getRepeatLabel(queue.repeatMode), inline: true },
+                { name: 'Autoplay', value: isAutoplayEnabled(queue) ? 'On' : 'Off', inline: true },
                 { name: 'Shuffle', value: queue.isShuffling ? 'On' : 'Off', inline: true },
+                { name: 'Effects', value: getEffectLabel(queue), inline: true },
             );
     }
 
     const nextTrack = queue.tracks.at(0);
-    const requestedBy = currentTrack.requestedBy?.username ?? 'Unknown';
-    const status = isQueuePaused(queue) ? 'Paused' : 'Playing';
-
     const embed = new EmbedBuilder()
         .setColor(EMBED_COLOR)
         .setTitle(truncate(currentTrack.title, 256))
@@ -208,15 +319,17 @@ function buildControlEmbed(queue: GuildQueue<PlaybackMetadata>) {
         .setDescription([
             `by **${truncate(currentTrack.author || 'Unknown Artist', 64)}**`,
             '',
-            `Status: ${status}`,
             `Up next: ${nextTrack ? `**${truncate(nextTrack.title, 48)}**` : 'Nothing queued'}`,
         ].join('\n'))
         .addFields(
             { name: 'Duration', value: currentTrack.duration || 'Live', inline: true },
             { name: 'Queue', value: `${queue.size} waiting`, inline: true },
-            { name: 'Mode', value: `${getRepeatLabel(queue.repeatMode)} - ${queue.isShuffling ? 'Shuffle On' : 'Shuffle Off'}`, inline: true },
-        )
-        .setFooter({ text: `Requested by ${requestedBy}` });
+            { name: 'Volume', value: `${getQueueVolume(queue)}%`, inline: true },
+            { name: 'Loop', value: getRepeatLabel(queue.repeatMode), inline: true },
+            { name: 'Autoplay', value: isAutoplayEnabled(queue) ? 'On' : 'Off', inline: true },
+            { name: 'Shuffle', value: queue.isShuffling ? 'On' : 'Off', inline: true },
+            { name: 'Effects', value: getEffectLabel(queue), inline: true },
+        );
 
     if (currentTrack.thumbnail) {
         embed.setThumbnail(currentTrack.thumbnail);
@@ -276,9 +389,48 @@ function buildMetadata(textChannel: GuildTextBasedChannel, queue: GuildQueue | n
     };
 }
 
+function buildMoreMenuPayload(queue: GuildQueue<PlaybackMetadata>) {
+    const currentTrack = queue.currentTrack;
+
+    return {
+        embeds: [
+            new EmbedBuilder()
+                .setColor(EMBED_COLOR)
+                .setTitle('More Controls')
+                .setDescription([
+                    `Now playing: ${currentTrack ? `**${truncate(currentTrack.title, 56)}**` : 'Nothing'}`,
+                    '',
+                    'Open queue, lyrics, effects or your saved favorites.',
+                ].join('\n'))
+                .addFields(
+                    { name: 'Volume', value: `${getQueueVolume(queue)}%`, inline: true },
+                    { name: 'Autoplay', value: isAutoplayEnabled(queue) ? 'On' : 'Off', inline: true },
+                    { name: 'Effects', value: getEffectLabel(queue), inline: true },
+                ),
+        ],
+        components: [
+            new ActionRowBuilder<ButtonBuilder>().addComponents(
+                createControlButton(`${PANEL_PREFIX}:queue:open`, 'Queue', EMOJI_QUEUE),
+                createControlButton(`${PANEL_PREFIX}:lyrics:open`, 'Lyrics', EMOJI_LYRICS, !currentTrack),
+                createControlButton(`${PANEL_PREFIX}:effects:open`, 'Effects', EMOJI_EFFECTS, !currentTrack),
+                createControlButton(`${PANEL_PREFIX}:favorites:open:0:0`, 'Favorites', EMOJI_FAVORITES),
+                createControlButton(`${PANEL_PREFIX}:close`, 'Close', EMOJI_CLOSE),
+            ),
+        ],
+    };
+}
+
+function buildClosedPanelPayload() {
+    return {
+        content: 'Extra controls closed.',
+        embeds: [],
+        components: [],
+    };
+}
+
 function buildQueueManagerPayload(queue: GuildQueue<PlaybackMetadata>, page: number, selectedIndex: number) {
     const tracks = getQueueTracks(queue);
-    const state = normalizeQueueState(queue, page, selectedIndex);
+    const state = normalizeSelection(tracks.length, page, selectedIndex, PAGE_SIZE);
     const currentTrack = queue.currentTrack;
     const totalPages = Math.max(1, Math.ceil(Math.max(tracks.length, 1) / PAGE_SIZE));
     const pageStart = state.page * PAGE_SIZE;
@@ -293,84 +445,205 @@ function buildQueueManagerPayload(queue: GuildQueue<PlaybackMetadata>, page: num
         }).join('\n')
         : 'Queue is empty.';
 
-    const embed = new EmbedBuilder()
-        .setColor(EMBED_COLOR)
-        .setTitle('Queue')
-        .setDescription([
-            `Now playing: ${currentTrack ? `**${truncate(currentTrack.title, 56)}**` : 'Nothing'}`,
-            '',
-            list,
-        ].join('\n'))
-        .addFields(
-            {
-                name: 'Selected',
-                value: selectedTrack
-                    ? `**${truncate(selectedTrack.title, 48)}**\n${truncate(selectedTrack.author || 'Unknown Artist', 32)} - ${selectedTrack.duration || 'Live'}`
-                    : 'No track selected.',
-                inline: false,
-            },
-        )
-        .setFooter({ text: `Page ${state.page + 1}/${totalPages} - ${tracks.length} queued` });
-
     const components: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>> = [
         new ActionRowBuilder<ButtonBuilder>().addComponents(
-            createIconButton(`${QUEUE_PREFIX}:page:-1:${state.page}:${state.selectedIndex}`, ICON_PAGE_PREV, state.page === 0 || tracks.length === 0),
-            createIconButton(`${QUEUE_PREFIX}:move:-1:${state.page}:${state.selectedIndex}`, ICON_QUEUE_MOVE_UP, state.selectedIndex <= 0),
-            createIconButton(`${QUEUE_PREFIX}:remove:${state.page}:${state.selectedIndex}`, ICON_QUEUE_REMOVE, state.selectedIndex < 0),
-            createIconButton(`${QUEUE_PREFIX}:move:1:${state.page}:${state.selectedIndex}`, ICON_QUEUE_MOVE_DOWN, state.selectedIndex < 0 || state.selectedIndex >= tracks.length - 1),
-            createIconButton(`${QUEUE_PREFIX}:page:1:${state.page}:${state.selectedIndex}`, ICON_PAGE_NEXT, state.page >= totalPages - 1 || tracks.length === 0),
+            createIconButton(`${PANEL_PREFIX}:queue:page:-1:${state.page}:${state.selectedIndex}`, ICON_PAGE_PREV, state.page === 0 || tracks.length === 0),
+            createIconButton(`${PANEL_PREFIX}:queue:move:-1:${state.page}:${state.selectedIndex}`, ICON_QUEUE_MOVE_UP, state.selectedIndex <= 0),
+            createIconButton(`${PANEL_PREFIX}:queue:remove:${state.page}:${state.selectedIndex}`, ICON_QUEUE_REMOVE, state.selectedIndex < 0),
+            createIconButton(`${PANEL_PREFIX}:queue:move:1:${state.page}:${state.selectedIndex}`, ICON_QUEUE_MOVE_DOWN, state.selectedIndex < 0 || state.selectedIndex >= tracks.length - 1),
+            createIconButton(`${PANEL_PREFIX}:queue:page:1:${state.page}:${state.selectedIndex}`, ICON_PAGE_NEXT, state.page >= totalPages - 1 || tracks.length === 0),
+        ),
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+            createControlButton(`${PANEL_PREFIX}:menu`, 'Back', EMOJI_MORE),
         ),
     ];
 
     if (pageTracks.length > 0) {
-        const select = new StringSelectMenuBuilder()
-            .setCustomId(`${QUEUE_PREFIX}:select:${state.page}:${state.selectedIndex}`)
-            .setPlaceholder('Select a track')
-            .addOptions(
-                pageTracks.map((track, index) => {
-                    const absoluteIndex = pageStart + index;
-                    return {
-                        label: `${absoluteIndex + 1}. ${truncate(track.title, 90)}`,
-                        description: truncate(`${track.author || 'Unknown Artist'} - ${track.duration || 'Live'}`, 100),
-                        value: String(absoluteIndex),
-                        default: absoluteIndex === state.selectedIndex,
-                    };
-                }),
-            );
-
-        components.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select));
+        components.push(
+            new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+                new StringSelectMenuBuilder()
+                    .setCustomId(`${PANEL_PREFIX}:queue:select:${state.page}:${state.selectedIndex}`)
+                    .setPlaceholder('Select a track')
+                    .addOptions(
+                        pageTracks.map((track, index) => {
+                            const absoluteIndex = pageStart + index;
+                            return {
+                                label: `${absoluteIndex + 1}. ${truncate(track.title, 90)}`,
+                                description: truncate(`${track.author || 'Unknown Artist'} - ${track.duration || 'Live'}`, 100),
+                                value: String(absoluteIndex),
+                                default: absoluteIndex === state.selectedIndex,
+                            };
+                        }),
+                    ),
+            ),
+        );
     }
 
     return {
-        embeds: [embed],
+        embeds: [
+            new EmbedBuilder()
+                .setColor(EMBED_COLOR)
+                .setTitle('Queue')
+                .setDescription([
+                    `Now playing: ${currentTrack ? `**${truncate(currentTrack.title, 56)}**` : 'Nothing'}`,
+                    '',
+                    list,
+                ].join('\n'))
+                .addFields(
+                    {
+                        name: 'Selected',
+                        value: selectedTrack
+                            ? `**${truncate(selectedTrack.title, 48)}**\n${truncate(selectedTrack.author || 'Unknown Artist', 32)} - ${selectedTrack.duration || 'Live'}`
+                            : 'No track selected.',
+                        inline: false,
+                    },
+                )
+                .setFooter({ text: `Page ${state.page + 1}/${totalPages} - ${tracks.length} queued` }),
+        ],
+        components,
+    };
+}
+
+function buildEffectsPanelPayload(queue: GuildQueue<PlaybackMetadata>) {
+    const activeEffect = getActiveEffect(queue);
+
+    return {
+        embeds: [
+            new EmbedBuilder()
+                .setColor(EMBED_COLOR)
+                .setTitle('Audio Effects')
+                .setDescription('Choose one preset. Applying a new preset replaces the previous one.')
+                .addFields(
+                    { name: 'Current', value: activeEffect ? EFFECT_FILTERS[activeEffect].label : 'Off', inline: true },
+                    { name: 'Track', value: queue.currentTrack ? truncate(queue.currentTrack.title, 48) : 'Nothing', inline: true },
+                ),
+        ],
+        components: [
+            new ActionRowBuilder<ButtonBuilder>().addComponents(
+                createControlButton(`${PANEL_PREFIX}:menu`, 'Back', EMOJI_MORE),
+                createControlButton(`${PANEL_PREFIX}:effects:apply:bassboost`, 'Bass', EMOJI_BASS, !queue.currentTrack),
+                createControlButton(`${PANEL_PREFIX}:effects:apply:nightcore`, 'Nightcore', EMOJI_NIGHTCORE, !queue.currentTrack),
+                createControlButton(`${PANEL_PREFIX}:effects:apply:8D`, '8D', EMOJI_8D, !queue.currentTrack),
+                createControlButton(`${PANEL_PREFIX}:effects:apply:clear`, 'Clear', EMOJI_CLEAR, !queue.currentTrack),
+            ),
+        ],
+    };
+}
+
+function buildLyricsPanelPayload(queue: GuildQueue<PlaybackMetadata>, lyrics: LyricsView, page: number) {
+    const safePage = clamp(page, 0, Math.max(lyrics.pages.length - 1, 0));
+
+    return {
+        embeds: [
+            new EmbedBuilder()
+                .setColor(EMBED_COLOR)
+                .setTitle('Lyrics')
+                .setDescription(lyrics.pages[safePage] ?? 'Lyrics not found.')
+                .addFields(
+                    { name: 'Track', value: queue.currentTrack ? truncate(queue.currentTrack.title, 64) : 'Nothing', inline: false },
+                    { name: 'Mode', value: lyrics.source === 'synced' ? 'Synced' : 'Plain', inline: true },
+                    { name: 'Current line', value: lyrics.currentLine ?? 'Unavailable', inline: true },
+                )
+                .setFooter({ text: `Page ${safePage + 1}/${lyrics.pages.length}` }),
+        ],
+        components: [
+            new ActionRowBuilder<ButtonBuilder>().addComponents(
+                createIconButton(`${PANEL_PREFIX}:lyrics:page:-1:${safePage}`, ICON_PAGE_PREV, safePage === 0),
+                createIconButton(`${PANEL_PREFIX}:lyrics:page:1:${safePage}`, ICON_PAGE_NEXT, safePage >= lyrics.pages.length - 1),
+                createControlButton(`${PANEL_PREFIX}:menu`, 'Back', EMOJI_MORE),
+            ),
+        ],
+    };
+}
+
+function buildFavoritesPanelPayload(queue: GuildQueue<PlaybackMetadata>, favorites: FavoriteEntry[], page: number, selectedIndex: number) {
+    const state = normalizeSelection(favorites.length, page, selectedIndex, PAGE_SIZE);
+    const totalPages = Math.max(1, Math.ceil(Math.max(favorites.length, 1) / PAGE_SIZE));
+    const pageStart = state.page * PAGE_SIZE;
+    const pageFavorites = favorites.slice(pageStart, pageStart + PAGE_SIZE);
+    const selectedFavorite = state.selectedIndex >= 0 ? favorites[state.selectedIndex] : null;
+
+    const list = pageFavorites.length > 0
+        ? pageFavorites.map((entry, index) => {
+            const absoluteIndex = pageStart + index;
+            const marker = absoluteIndex === state.selectedIndex ? '>' : ' ';
+            return `${marker} ${absoluteIndex + 1}. **${truncate(entry.title, 48)}**\n   ${truncate(entry.author, 28)} - ${entry.duration}`;
+        }).join('\n')
+        : 'No saved favorites yet.';
+
+    const components: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>> = [
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+            createIconButton(`${PANEL_PREFIX}:favorites:page:-1:${state.page}:${state.selectedIndex}`, ICON_PAGE_PREV, state.page === 0 || favorites.length === 0),
+            createIconButton(`${PANEL_PREFIX}:favorites:page:1:${state.page}:${state.selectedIndex}`, ICON_PAGE_NEXT, state.page >= totalPages - 1 || favorites.length === 0),
+            createControlButton(`${PANEL_PREFIX}:favorites:save:${state.page}:${state.selectedIndex}`, 'Save Current', EMOJI_FAVORITES, !queue.currentTrack),
+            createControlButton(`${PANEL_PREFIX}:favorites:queue:${state.page}:${state.selectedIndex}`, 'Queue Selected', EMOJI_QUEUE, state.selectedIndex < 0),
+            createControlButton(`${PANEL_PREFIX}:favorites:remove:${state.page}:${state.selectedIndex}`, 'Remove', ICON_QUEUE_REMOVE, state.selectedIndex < 0),
+        ),
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+            createControlButton(`${PANEL_PREFIX}:menu`, 'Back', EMOJI_MORE),
+        ),
+    ];
+
+    if (pageFavorites.length > 0) {
+        components.push(
+            new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+                new StringSelectMenuBuilder()
+                    .setCustomId(`${PANEL_PREFIX}:favorites:select:${state.page}:${state.selectedIndex}`)
+                    .setPlaceholder('Select a favorite')
+                    .addOptions(
+                        pageFavorites.map((entry, index) => {
+                            const absoluteIndex = pageStart + index;
+                            return {
+                                label: `${absoluteIndex + 1}. ${truncate(entry.title, 90)}`,
+                                description: truncate(`${entry.author} - ${entry.duration}`, 100),
+                                value: String(absoluteIndex),
+                                default: absoluteIndex === state.selectedIndex,
+                            };
+                        }),
+                    ),
+            ),
+        );
+    }
+
+    return {
+        embeds: [
+            new EmbedBuilder()
+                .setColor(EMBED_COLOR)
+                .setTitle('Favorites')
+                .setDescription(list)
+                .addFields(
+                    {
+                        name: 'Selected',
+                        value: selectedFavorite
+                            ? `**${truncate(selectedFavorite.title, 48)}**\n${truncate(selectedFavorite.author, 32)} - ${selectedFavorite.duration}`
+                            : 'No favorite selected.',
+                        inline: false,
+                    },
+                    {
+                        name: 'Now playing',
+                        value: queue.currentTrack ? truncate(queue.currentTrack.title, 56) : 'Nothing',
+                        inline: false,
+                    },
+                )
+                .setFooter({ text: `Page ${state.page + 1}/${totalPages} - ${favorites.length} saved` }),
+        ],
         components,
     };
 }
 
 function cycleRepeatMode(mode: number) {
-    if (mode === QueueRepeatMode.OFF) return QueueRepeatMode.TRACK;
     if (mode === QueueRepeatMode.TRACK) return QueueRepeatMode.QUEUE;
-    return QueueRepeatMode.OFF;
+    if (mode === QueueRepeatMode.QUEUE) return QueueRepeatMode.OFF;
+    return QueueRepeatMode.TRACK;
 }
 
-async function playNextTrack(queue: GuildQueue) {
-    const currentTrack = queue.currentTrack;
-    const nextTrack = queue.tracks.dispatch();
-
-    if (!nextTrack) {
-        throw new Error('There is no next track to skip to.');
-    }
-
-    if (currentTrack) {
-        queue.history.push(currentTrack);
-    }
-
-    await queue.node.play(nextTrack, { queue: false });
-}
-
-function parsePositiveInt(value: string | undefined, fallback: number) {
+function parseIntToken(value: string | undefined, fallback: number) {
     const parsed = Number.parseInt(value ?? '', 10);
     return Number.isNaN(parsed) ? fallback : parsed;
+}
+
+function clampVolume(value: number) {
+    return clamp(value, 0, 200);
 }
 
 async function ensureSharedVoiceChannel(
@@ -382,7 +655,7 @@ async function ensureSharedVoiceChannel(
         return null;
     }
 
-    const queue = player.nodes.get(interaction.guild);
+    const queue = player.nodes.get(interaction.guildId);
     if (!queue) {
         await interaction.reply({ content: 'There is no active playback right now.', flags: MessageFlags.Ephemeral });
         return null;
@@ -398,15 +671,173 @@ async function ensureSharedVoiceChannel(
     return queue;
 }
 
+async function seekBy(queue: GuildQueue, deltaMs: number) {
+    const track = queue.currentTrack;
+    if (!canSeek(track) || !track) {
+        throw new Error('This track cannot be seeked.');
+    }
+
+    const targetVolume = clampVolume(getQueueVolume(queue));
+    const nextPosition = clamp(queue.node.estimatedPlaybackTime + deltaMs, 0, track.durationMS);
+    if (targetVolume > 0) {
+        await fadeQueueVolume(queue, targetVolume, 0, SEEK_FADE_OUT_MS);
+    }
+
+    const ok = await queue.node.seek(nextPosition);
+    if (!ok) {
+        if (targetVolume > 0) {
+            await fadeQueueVolume(queue, 0, targetVolume, SEEK_FADE_IN_MS);
+        }
+        throw new Error('Could not seek this track.');
+    }
+
+    await delay(40);
+    if (targetVolume > 0) {
+        await fadeQueueVolume(queue, 0, targetVolume, SEEK_FADE_IN_MS);
+    }
+}
+
+function changeVolumeBy(queue: GuildQueue, delta: number) {
+    const nextVolume = clampVolume(getQueueVolume(queue) + delta);
+    const ok = queue.node.setVolume(nextVolume);
+    if (!ok) {
+        throw new Error('Could not update the volume.');
+    }
+}
+
+async function setEffect(queue: GuildQueue, effect: EffectKey | 'clear') {
+    if (effect === 'clear') {
+        await queue.filters.ffmpeg.setFilters(false);
+        return;
+    }
+
+    await queue.filters.ffmpeg.setFilters([EFFECT_FILTERS[effect].filter]);
+}
+
+async function fadeQueueVolume(queue: GuildQueue, from: number, to: number, durationMs: number) {
+    const guildId = queue.guild.id;
+    const steps = Math.max(1, FADE_STEPS);
+    const stepDelay = Math.max(10, Math.floor(durationMs / steps));
+
+    fadingQueues.add(guildId);
+    try {
+        queue.node.setVolume(clampVolume(from));
+        for (let step = 1; step <= steps; step += 1) {
+            const nextVolume = clampVolume(Math.round(from + ((to - from) * step) / steps));
+            queue.node.setVolume(nextVolume);
+            await delay(stepDelay);
+        }
+    } finally {
+        fadingQueues.delete(guildId);
+    }
+}
+
+async function softenTrackStart(queue: GuildQueue<PlaybackMetadata>) {
+    const targetVolume = clampVolume(getQueueVolume(queue));
+    if (targetVolume <= 0) return;
+
+    const startVolume = Math.min(8, targetVolume);
+    if (startVolume >= targetVolume) return;
+
+    await fadeQueueVolume(queue, startVolume, targetVolume, START_FADE_MS);
+}
+
+async function fetchLyricsView(player: Player, queue: GuildQueue<PlaybackMetadata>): Promise<LyricsView> {
+    const track = queue.currentTrack;
+    if (!track) {
+        throw new Error('Nothing is currently playing.');
+    }
+
+    const cached = lyricsCache.get(track.url);
+    if (cached) {
+        return cached;
+    }
+
+    let results: LrcSearchResult[] = [];
+
+    try {
+        results = await player.lyrics.search({
+            trackName: track.cleanTitle || track.title,
+            artistName: track.author || undefined,
+        });
+    } catch {
+        results = [];
+    }
+
+    if (results.length === 0) {
+        try {
+            results = await player.lyrics.search({
+                q: `${track.title} ${track.author || ''}`.trim(),
+            });
+        } catch {
+            results = [];
+        }
+    }
+
+    const found = results[0];
+    if (!found) {
+        const fallback = {
+            pages: ['Lyrics not found.'],
+            currentLine: null,
+            source: 'plain' as const,
+        };
+        lyricsCache.set(track.url, fallback);
+        return fallback;
+    }
+
+    if (found.syncedLyrics) {
+        const provider = queue.syncedLyrics(found);
+        if (provider.lyrics.size === 0) {
+            provider.load(found.syncedLyrics);
+        }
+
+        const currentLine = provider.at(queue.node.estimatedPlaybackTime)?.line ?? null;
+        const lines = Array.from(provider.lyrics.entries()).map(([timestamp, line]) => `${formatTimestamp(timestamp)} ${line}`);
+        const syncedView = {
+            pages: chunkLines(lines, LYRICS_PAGE_SIZE),
+            currentLine,
+            source: 'synced' as const,
+        };
+
+        lyricsCache.set(track.url, syncedView);
+        return syncedView;
+    }
+
+    const plainView = {
+        pages: chunkLines(found.plainLyrics.split(/\r?\n/), LYRICS_PAGE_SIZE),
+        currentLine: null,
+        source: 'plain' as const,
+    };
+
+    lyricsCache.set(track.url, plainView);
+    return plainView;
+}
+
+async function enqueueFavorite(player: Player, queue: GuildQueue<PlaybackMetadata>, favorite: FavoriteEntry, requestedBy: User) {
+    const result = await player.search(favorite.url, {
+        requestedBy,
+        searchEngine: QueryType.AUTO_SEARCH,
+    });
+
+    const track = result.tracks[0];
+    if (!track) {
+        throw new Error('Could not load that saved track.');
+    }
+
+    if (queue.currentTrack || queue.isPlaying()) {
+        queue.addTrack(track);
+    } else {
+        await queue.node.play(track);
+    }
+
+    return track;
+}
+
 async function handleQueueOpen(interaction: ButtonInteraction, player: Player) {
     const queue = await ensureSharedVoiceChannel(interaction, player);
     if (!queue) return true;
 
-    await interaction.reply({
-        ...buildQueueManagerPayload(queue as GuildQueue<PlaybackMetadata>, 0, 0),
-        flags: MessageFlags.Ephemeral,
-    });
-
+    await interaction.update(buildQueueManagerPayload(queue as GuildQueue<PlaybackMetadata>, 0, 0));
     return true;
 }
 
@@ -414,13 +845,15 @@ async function handleQueueButtonAction(interaction: ButtonInteraction, player: P
     const queue = await ensureSharedVoiceChannel(interaction, player);
     if (!queue) return true;
 
-    const [, , action, arg, pageToken, selectedToken] = interaction.customId.split(':');
-    const page = parsePositiveInt(pageToken, 0);
-    const selectedIndex = parsePositiveInt(selectedToken, 0);
+    const [, , panel, action, arg, pageToken, selectedToken] = interaction.customId.split(':');
+    if (panel !== 'queue') return false;
+
+    const page = parseIntToken(pageToken, 0);
+    const selectedIndex = parseIntToken(selectedToken, 0);
 
     try {
         if (action === 'page') {
-            const delta = Number.parseInt(arg ?? '0', 10) || 0;
+            const delta = parseIntToken(arg, 0);
             const tracks = getQueueTracks(queue);
             const nextPage = clamp(page + delta, 0, Math.max(0, Math.ceil(Math.max(tracks.length, 1) / PAGE_SIZE) - 1));
             const fallbackSelected = tracks.length === 0 ? -1 : nextPage * PAGE_SIZE;
@@ -441,7 +874,7 @@ async function handleQueueButtonAction(interaction: ButtonInteraction, player: P
                 return true;
             }
 
-            const delta = Number.parseInt(arg ?? '0', 10) || 0;
+            const delta = parseIntToken(arg, 0);
             const targetIndex = clamp(selectedIndex + delta, 0, tracks.length - 1);
             if (targetIndex !== selectedIndex) {
                 queue.moveTrack(track, targetIndex);
@@ -484,6 +917,153 @@ async function handleQueueSelect(interaction: StringSelectMenuInteraction, playe
     const nextPage = selectedIndex < 0 ? 0 : Math.floor(selectedIndex / PAGE_SIZE);
 
     await interaction.update(buildQueueManagerPayload(queue as GuildQueue<PlaybackMetadata>, nextPage, selectedIndex));
+    return true;
+}
+
+async function handleLyricsOpen(interaction: ButtonInteraction, player: Player) {
+    const queue = await ensureSharedVoiceChannel(interaction, player);
+    if (!queue) return true;
+
+    await interaction.deferUpdate();
+    const lyrics = await fetchLyricsView(player, queue as GuildQueue<PlaybackMetadata>);
+    await interaction.editReply(buildLyricsPanelPayload(queue as GuildQueue<PlaybackMetadata>, lyrics, 0));
+    return true;
+}
+
+async function handleLyricsButtonAction(interaction: ButtonInteraction, player: Player) {
+    const queue = await ensureSharedVoiceChannel(interaction, player);
+    if (!queue) return true;
+
+    const [, , panel, action, arg, pageToken] = interaction.customId.split(':');
+    if (panel !== 'lyrics') return false;
+
+    const currentPage = parseIntToken(pageToken, 0);
+    const lyrics = await fetchLyricsView(player, queue as GuildQueue<PlaybackMetadata>);
+
+    if (action === 'page') {
+        const nextPage = clamp(currentPage + parseIntToken(arg, 0), 0, lyrics.pages.length - 1);
+        await interaction.update(buildLyricsPanelPayload(queue as GuildQueue<PlaybackMetadata>, lyrics, nextPage));
+        return true;
+    }
+
+    return false;
+}
+
+async function handleEffectsOpen(interaction: ButtonInteraction, player: Player) {
+    const queue = await ensureSharedVoiceChannel(interaction, player);
+    if (!queue) return true;
+
+    await interaction.update(buildEffectsPanelPayload(queue as GuildQueue<PlaybackMetadata>));
+    return true;
+}
+
+async function handleEffectsButtonAction(interaction: ButtonInteraction, player: Player) {
+    const queue = await ensureSharedVoiceChannel(interaction, player);
+    if (!queue) return true;
+
+    const [, , panel, action, effect] = interaction.customId.split(':');
+    if (panel !== 'effects' || action !== 'apply') return false;
+
+    await interaction.deferUpdate();
+    await setEffect(queue as GuildQueue<PlaybackMetadata>, effect as EffectKey | 'clear');
+    await interaction.editReply(buildEffectsPanelPayload(queue as GuildQueue<PlaybackMetadata>));
+    await syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false);
+    return true;
+}
+
+async function handleFavoritesOpen(interaction: ButtonInteraction, player: Player) {
+    const queue = await ensureSharedVoiceChannel(interaction, player);
+    if (!queue) return true;
+
+    const [, , , , pageToken, selectedToken] = interaction.customId.split(':');
+    const page = parseIntToken(pageToken, 0);
+    const selectedIndex = parseIntToken(selectedToken, 0);
+    const favorites = await listFavorites(interaction.user.id);
+
+    await interaction.deferUpdate();
+    await interaction.editReply(buildFavoritesPanelPayload(queue as GuildQueue<PlaybackMetadata>, favorites, page, selectedIndex));
+    return true;
+}
+
+async function handleFavoritesButtonAction(interaction: ButtonInteraction, player: Player) {
+    const queue = await ensureSharedVoiceChannel(interaction, player);
+    if (!queue) return true;
+
+    const [, , panel, action, arg, pageToken, selectedToken] = interaction.customId.split(':');
+    if (panel !== 'favorites') return false;
+
+    const page = parseIntToken(pageToken, 0);
+    const selectedIndex = parseIntToken(selectedToken, 0);
+
+    if (action === 'page') {
+        const favorites = await listFavorites(interaction.user.id);
+        const nextPage = clamp(page + parseIntToken(arg, 0), 0, Math.max(0, Math.ceil(Math.max(favorites.length, 1) / PAGE_SIZE) - 1));
+        const nextSelected = favorites.length === 0 ? -1 : Math.min(selectedIndex, favorites.length - 1);
+        await interaction.update(buildFavoritesPanelPayload(queue as GuildQueue<PlaybackMetadata>, favorites, nextPage, nextSelected));
+        return true;
+    }
+
+    if (action === 'save') {
+        await interaction.deferUpdate();
+        if (!queue.currentTrack) {
+            throw new Error('Nothing is currently playing to save.');
+        }
+
+        const favorites = await saveFavorite(interaction.user.id, queue.currentTrack);
+        await interaction.editReply(buildFavoritesPanelPayload(queue as GuildQueue<PlaybackMetadata>, favorites, 0, 0));
+        await interaction.followUp({
+            content: `Saved **${queue.currentTrack.title}** to your favorites.`,
+            flags: MessageFlags.Ephemeral,
+        }).catch(() => null);
+        return true;
+    }
+
+    if (action === 'queue') {
+        await interaction.deferUpdate();
+        const favorites = await listFavorites(interaction.user.id);
+        const favorite = favorites[selectedIndex];
+        if (!favorite) {
+            throw new Error('Select a favorite first.');
+        }
+
+        const track = await enqueueFavorite(player, queue as GuildQueue<PlaybackMetadata>, favorite, interaction.user);
+        const refreshedFavorites = await listFavorites(interaction.user.id);
+        await interaction.editReply(buildFavoritesPanelPayload(queue as GuildQueue<PlaybackMetadata>, refreshedFavorites, page, selectedIndex));
+        await interaction.followUp({
+            content: `Queued **${track.title}** from favorites.`,
+            flags: MessageFlags.Ephemeral,
+        }).catch(() => null);
+        await syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false);
+        return true;
+    }
+
+    if (action === 'remove') {
+        await interaction.deferUpdate();
+        const favorites = await listFavorites(interaction.user.id);
+        const favorite = favorites[selectedIndex];
+        if (!favorite) {
+            throw new Error('Select a favorite first.');
+        }
+
+        const refreshedFavorites = await removeFavorite(interaction.user.id, favorite.url);
+        const nextSelectedIndex = refreshedFavorites.length === 0 ? -1 : Math.min(selectedIndex, refreshedFavorites.length - 1);
+        const nextPage = nextSelectedIndex < 0 ? 0 : Math.floor(nextSelectedIndex / PAGE_SIZE);
+        await interaction.editReply(buildFavoritesPanelPayload(queue as GuildQueue<PlaybackMetadata>, refreshedFavorites, nextPage, nextSelectedIndex));
+        return true;
+    }
+
+    return false;
+}
+
+async function handleFavoritesSelect(interaction: StringSelectMenuInteraction, player: Player) {
+    const queue = await ensureSharedVoiceChannel(interaction, player);
+    if (!queue) return true;
+
+    const selectedIndex = Number.parseInt(interaction.values[0] ?? '-1', 10);
+    const nextPage = selectedIndex < 0 ? 0 : Math.floor(selectedIndex / PAGE_SIZE);
+    const favorites = await listFavorites(interaction.user.id);
+
+    await interaction.update(buildFavoritesPanelPayload(queue as GuildQueue<PlaybackMetadata>, favorites, nextPage, selectedIndex));
     return true;
 }
 
@@ -530,15 +1110,17 @@ export async function playTrack({ player, member, query, textChannel, requestedB
 
 export function attachPlayerEvents(player: Player) {
     player.events.on('playerStart', (queue) => {
-        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>);
+        lyricsCache.delete(queue.currentTrack?.url ?? '');
+        void softenTrackStart(queue as GuildQueue<PlaybackMetadata>).catch(() => null);
+        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, true, true);
     });
 
     player.events.on('audioTrackAdd', (queue) => {
-        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>);
+        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, true, true);
     });
 
     player.events.on('audioTracksAdd', (queue) => {
-        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>);
+        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, true, true);
     });
 
     player.events.on('playerPause', (queue) => {
@@ -546,6 +1128,17 @@ export function attachPlayerEvents(player: Player) {
     });
 
     player.events.on('playerResume', (queue) => {
+        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>);
+    });
+
+    player.events.on('volumeChange', (queue) => {
+        if (fadingQueues.has(queue.guild.id)) {
+            return;
+        }
+        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>);
+    });
+
+    player.events.on('audioFiltersUpdate', (queue) => {
         void syncControlPanel(queue as GuildQueue<PlaybackMetadata>);
     });
 
@@ -584,12 +1177,49 @@ export async function handlePlaybackInteraction(
     player: Player,
 ) {
     if (interaction.isButton()) {
-        if (interaction.customId === `${CONTROL_PREFIX}:queue`) {
+        if (interaction.customId === `${PANEL_PREFIX}:close`) {
+            await interaction.update(buildClosedPanelPayload());
+            return true;
+        }
+
+        if (interaction.customId === `${PANEL_PREFIX}:menu`) {
+            const queue = await ensureSharedVoiceChannel(interaction, player);
+            if (!queue) return true;
+
+            await interaction.update(buildMoreMenuPayload(queue as GuildQueue<PlaybackMetadata>));
+            return true;
+        }
+
+        if (interaction.customId === `${PANEL_PREFIX}:queue:open`) {
             return handleQueueOpen(interaction, player);
         }
 
-        if (interaction.customId.startsWith(`${QUEUE_PREFIX}:`)) {
+        if (interaction.customId.startsWith(`${PANEL_PREFIX}:queue:`)) {
             return handleQueueButtonAction(interaction, player);
+        }
+
+        if (interaction.customId === `${PANEL_PREFIX}:lyrics:open`) {
+            return handleLyricsOpen(interaction, player);
+        }
+
+        if (interaction.customId.startsWith(`${PANEL_PREFIX}:lyrics:`)) {
+            return handleLyricsButtonAction(interaction, player);
+        }
+
+        if (interaction.customId === `${PANEL_PREFIX}:effects:open`) {
+            return handleEffectsOpen(interaction, player);
+        }
+
+        if (interaction.customId.startsWith(`${PANEL_PREFIX}:effects:`)) {
+            return handleEffectsButtonAction(interaction, player);
+        }
+
+        if (interaction.customId.startsWith(`${PANEL_PREFIX}:favorites:open`)) {
+            return handleFavoritesOpen(interaction, player);
+        }
+
+        if (interaction.customId.startsWith(`${PANEL_PREFIX}:favorites:`)) {
+            return handleFavoritesButtonAction(interaction, player);
         }
 
         if (!interaction.customId.startsWith(`${CONTROL_PREFIX}:`)) {
@@ -600,6 +1230,15 @@ export async function handlePlaybackInteraction(
         if (!queue) return true;
 
         const action = interaction.customId.slice(`${CONTROL_PREFIX}:`.length);
+
+        if (action === 'more') {
+            await interaction.reply({
+                ...buildMoreMenuPayload(queue as GuildQueue<PlaybackMetadata>),
+                flags: MessageFlags.Ephemeral,
+            });
+            return true;
+        }
+
         await interaction.deferUpdate();
 
         try {
@@ -613,26 +1252,28 @@ export async function handlePlaybackInteraction(
                 } else {
                     queue.node.pause();
                 }
-            } else if (action === 'next') {
-                if (!queue.currentTrack) {
-                    throw new Error('There is no next track to skip to.');
-                }
-
-                await playNextTrack(queue);
-            } else if (action === 'prev') {
-                if (!queue.history.previousTrack) {
-                    throw new Error('There is no previous track in history.');
-                }
-
-                await queue.history.previous(true);
+            } else if (action === 'seek_back') {
+                await seekBy(queue, -SEEK_STEP_MS);
+            } else if (action === 'seek_forward') {
+                await seekBy(queue, SEEK_STEP_MS);
+            } else if (action === 'volume_down') {
+                changeVolumeBy(queue, -VOLUME_STEP);
+            } else if (action === 'volume_up') {
+                changeVolumeBy(queue, VOLUME_STEP);
+            } else if (action === 'stop') {
+                queue.node.stop(true);
             } else if (action === 'loop') {
                 queue.setRepeatMode(cycleRepeatMode(queue.repeatMode));
+            } else if (action === 'autoplay') {
+                queue.setRepeatMode(isAutoplayEnabled(queue) ? QueueRepeatMode.OFF : QueueRepeatMode.AUTOPLAY);
             } else if (action === 'shuffle') {
                 if (getQueueTracks(queue).length === 0) {
                     throw new Error('There are no queued tracks to shuffle.');
                 }
 
                 queue.toggleShuffle();
+            } else {
+                return false;
             }
 
             await syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false);
@@ -644,8 +1285,14 @@ export async function handlePlaybackInteraction(
         return true;
     }
 
-    if (interaction.isStringSelectMenu() && interaction.customId.startsWith(`${QUEUE_PREFIX}:`)) {
-        return handleQueueSelect(interaction, player);
+    if (interaction.isStringSelectMenu()) {
+        if (interaction.customId.startsWith(`${PANEL_PREFIX}:queue:`)) {
+            return handleQueueSelect(interaction, player);
+        }
+
+        if (interaction.customId.startsWith(`${PANEL_PREFIX}:favorites:`)) {
+            return handleFavoritesSelect(interaction, player);
+        }
     }
 
     return false;
