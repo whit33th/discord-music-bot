@@ -34,6 +34,8 @@ const ICON_QUEUE_MOVE_DOWN = '\u2193';
 const ICON_QUEUE_REMOVE = '\u2212';
 const ICON_PAGE_PREV = '\u2039';
 const ICON_PAGE_NEXT = '\u203A';
+const GOOGLEVIDEO_EXTRACTOR_ID = 'ext:com.github.xxczaki.youtube-sabr';
+const YOUTUBEI_EXTRACTOR_ID = 'ext:com.retrouser955.discord-player.discord-player-youtubei';
 
 type PlaybackMetadata = {
     textChannel: GuildTextBasedChannel;
@@ -85,6 +87,12 @@ function truncate(value: string, limit: number) {
 
 function isQueuePaused(queue: GuildQueue) {
     return queue.dispatcher?.paused ?? false;
+}
+
+function getYouTubeSearchEngine() {
+    return (process.env.YOUTUBE_EXTRACTOR ?? 'youtubei').toLowerCase() === 'googlevideo'
+        ? GOOGLEVIDEO_EXTRACTOR_ID
+        : YOUTUBEI_EXTRACTOR_ID;
 }
 
 function getQueueTracks(queue: GuildQueue) {
@@ -496,7 +504,7 @@ export async function playTrack({ player, member, query, textChannel, requestedB
     const normalizedQuery = isUrl(query) ? query : `ytsearch:${query}`;
     const result = await player.play(voiceChannel, normalizedQuery, {
         requestedBy,
-        searchEngine: normalizedQuery.startsWith('ytsearch:') ? 'ext:com.github.xxczaki.youtube-sabr' : QueryType.AUTO_SEARCH,
+        searchEngine: normalizedQuery.startsWith('ytsearch:') ? getYouTubeSearchEngine() : QueryType.AUTO_SEARCH,
         nodeOptions: {
             metadata,
             selfDeaf: true,
