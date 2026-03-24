@@ -54,9 +54,14 @@ function getPreferredOpusBackend() {
     return 'none';
 }
 
+function isYoutubeDlEnabled() {
+    return (process.env.YOUTUBE_USE_YTDL ?? 'false').toLowerCase() === 'true';
+}
+
 client.once(Events.ClientReady, (readyClient) => {
     console.log(`Ready! Logged in as ${readyClient.user.tag}`);
     console.log(`[audio] opus backend: ${getPreferredOpusBackend()}`);
+    console.log(`[audio] yt-dlp: ${isYoutubeDlEnabled() ? 'enabled' : 'disabled'}`);
 });
 
 client.commands = new Collection();

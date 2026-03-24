@@ -41,7 +41,7 @@ function createYoutubeDlStream(url: string, cookie?: string) {
 export async function createPlayer(client: Client) {
     const player = new Player(client);
     const youtubeExtractor = (process.env.YOUTUBE_EXTRACTOR ?? 'youtubei').toLowerCase();
-    const youtubeiUseDl = (process.env.YOUTUBE_USE_YTDL ?? 'true').toLowerCase() === 'true';
+    const youtubeiUseDl = (process.env.YOUTUBE_USE_YTDL ?? 'false').toLowerCase() === 'true';
     const youtubeDlPath = (youtubedl as any).constants?.YOUTUBE_DL_PATH as string | undefined;
     const hasYoutubeDlBinary = Boolean(youtubeDlPath && fs.existsSync(youtubeDlPath));
 
