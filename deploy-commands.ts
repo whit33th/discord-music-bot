@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const { CLIENT_ID, GUILD_ID, DISCORD_TOKEN } = process.env;
 
-if (!CLIENT_ID || !GUILD_ID || !DISCORD_TOKEN) {
+if (!CLIENT_ID || !DISCORD_TOKEN) {
     throw new Error('Missing required environment variables');
 }
 const __filename = fileURLToPath(import.meta.url);
@@ -41,10 +41,14 @@ const rest = new REST().setToken(DISCORD_TOKEN);
     try {
         console.log(`Started refreshing ${commands.length} application (/) commands.`);
 
-        // The put method is used to fully refresh all commands in the guild with the current set
-        const data: any = await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
+        const route = GUILD_ID
+            ? Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID)
+            : Routes.applicationCommands(CLIENT_ID);
 
-        console.log(`Successfully reloaded ${data.length} application (/) commands.`);
+        const scope = GUILD_ID ? `guild ${GUILD_ID}` : 'global';
+        const data: any = await rest.put(route, { body: commands });
+
+        console.log(`Successfully reloaded ${data.length} application (/) commands for ${scope}.`);
     } catch (error) {
         // And of course, make sure you catch and log any errors!
         console.error(error);
