@@ -6,14 +6,14 @@ import { YoutubeSabrExtractor } from 'discord-player-googlevideo';
 import { YoutubeiExtractor } from 'discord-player-youtubei';
 import youtubedl from 'youtube-dl-exec';
 
-function createYoutubeDlStream(url: string, cookie?: string) {
+function createYoutubeDlStream(url: string, cookieFile?: string) {
     const process = youtubedl.exec(url, {
         format: 'bestaudio',
         output: '-',
         noWarnings: true,
         noProgress: true,
         jsRuntimes: 'node',
-        cookies: cookie,
+        cookies: cookieFile,
     });
 
     process.catch((error) => {
@@ -42,14 +42,17 @@ export async function createPlayer(client: Client) {
     const player = new Player(client);
     const youtubeExtractor = (process.env.YOUTUBE_EXTRACTOR ?? 'youtubei').toLowerCase();
     const youtubeiUseDl = (process.env.YOUTUBE_USE_YTDL ?? 'false').toLowerCase() === 'true';
+    const youtubeCookie = process.env.YOUTUBE_COOKIE;
+    const ytDlpCookieFile = process.env.YTDLP_COOKIE_FILE;
     const youtubeDlPath = (youtubedl as any).constants?.YOUTUBE_DL_PATH as string | undefined;
     const hasYoutubeDlBinary = Boolean(youtubeDlPath && fs.existsSync(youtubeDlPath));
+    const hasYtDlpCookieFile = Boolean(ytDlpCookieFile && fs.existsSync(ytDlpCookieFile));
 
     if (youtubeExtractor === 'googlevideo') {
         await player.extractors.register(YoutubeSabrExtractor, {});
     } else {
         const youtubeiOptions: Record<string, unknown> = {
-            cookie: process.env.YOUTUBE_COOKIE,
+            cookie: youtubeCookie,
             generateWithPoToken: process.env.YOUTUBE_GENERATE_PO_TOKEN === 'true',
             disablePlayer: true,
             overrideBridgeMode: 'yt',
@@ -62,7 +65,10 @@ export async function createPlayer(client: Client) {
 
         if (youtubeiUseDl && hasYoutubeDlBinary) {
             youtubeiOptions.createStream = (track: Track) =>
-                Promise.resolve(createYoutubeDlStream(track.url, process.env.YOUTUBE_COOKIE));
+                Promise.resolve(createYoutubeDlStream(track.url, hasYtDlpCookieFile ? ytDlpCookieFile : undefined));
+            if (!hasYtDlpCookieFile) {
+                console.warn('[audio] yt-dlp is enabled without YTDLP_COOKIE_FILE, YouTube may require sign-in cookies');
+            }
         } else if (youtubeiUseDl) {
             console.warn('[audio] yt-dlp binary not found, falling back to native youtubei streaming');
         }

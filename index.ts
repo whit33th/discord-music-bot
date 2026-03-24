@@ -58,10 +58,15 @@ function isYoutubeDlEnabled() {
     return (process.env.YOUTUBE_USE_YTDL ?? 'false').toLowerCase() === 'true';
 }
 
+function hasYtDlpCookieFile() {
+    return Boolean(process.env.YTDLP_COOKIE_FILE);
+}
+
 client.once(Events.ClientReady, (readyClient) => {
     console.log(`Ready! Logged in as ${readyClient.user.tag}`);
     console.log(`[audio] opus backend: ${getPreferredOpusBackend()}`);
     console.log(`[audio] yt-dlp: ${isYoutubeDlEnabled() ? 'enabled' : 'disabled'}`);
+    console.log(`[audio] yt-dlp cookies: ${hasYtDlpCookieFile() ? 'configured' : 'not configured'}`);
 });
 
 client.commands = new Collection();
