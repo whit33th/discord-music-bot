@@ -93,12 +93,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
             await interaction.followUp({
                 content: 'There was an error while executing this command!',
                 flags: MessageFlags.Ephemeral,
-            });
+            }).catch(() => null);
         } else {
             await interaction.reply({
                 content: 'There was an error while executing this command!',
                 flags: MessageFlags.Ephemeral,
-            });
+            }).catch(() => null);
         }
     }
 });

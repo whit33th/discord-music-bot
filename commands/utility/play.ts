@@ -18,17 +18,17 @@ export async function execute({ interaction, player }: { interaction: ChatInputC
         return;
     }
 
+    await interaction.deferReply();
+
     const member = interaction.member instanceof GuildMember
         ? interaction.member
         : await interaction.guild.members.fetch(interaction.user.id);
     const query = interaction.options.getString('query', true).trim();
 
     if (!query) {
-        await interaction.reply({ content: 'Provide a track name.', flags: MessageFlags.Ephemeral });
+        await interaction.editReply('Provide a track name.');
         return;
     }
-
-    await interaction.deferReply();
 
     try {
         const result = await playTrack({
