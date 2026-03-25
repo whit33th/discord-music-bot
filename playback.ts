@@ -19,7 +19,7 @@ import { listFavorites, removeFavorite, saveFavorite, type FavoriteEntry } from 
 const BOT_BUSY_ERROR = 'BOT_BUSY_IN_ANOTHER_CHANNEL';
 const CONTROL_PREFIX = 'musicctl';
 const PANEL_PREFIX = 'musicpanel';
-const EMBED_COLOR = 0x111218;
+const EMBED_COLOR = 0x000000;
 const PAGE_SIZE = 8;
 const LYRICS_PAGE_SIZE = 14;
 const VOLUME_STEP = 10;
@@ -53,13 +53,6 @@ const EMOJI_CLEAR = '\u{1F9F9}';
 
 const ICON_PAGE_PREV = '1486117061548703794';
 const ICON_PAGE_NEXT = '1486117059711729785';
-const TEXT_ICON_ARTIST = 'artist:1486104236562317474';
-const TEXT_ICON_DURATION = 'duration:1486104258162987220';
-const TEXT_ICON_QUEUE = 'queue:1486104256619479276';
-
-const TEXT_ICON_VOLUME = '🔊';
-const TEXT_ICON_LOOP = '🔁';
-const TEXT_ICON_TITLE = '🎵';
 
 const EFFECT_FILTERS = {
     bassboost: {
@@ -113,7 +106,6 @@ type LyricsView = {
 
 const lyricsCache = new Map<string, LyricsView>();
 const fadingQueues = new Set<string>();
-const textEmojiCache = new Map<string, string>();
 const panelSyncTasks = new Map<string, Promise<void>>();
 
 function isPlaybackMetadata(value: unknown): value is PlaybackMetadata {
@@ -471,7 +463,7 @@ async function showQueueEndedPanel(queue: GuildQueue<PlaybackMetadata>) {
 
         try {
             metadata.controlMessage = await metadata.controlMessage.edit({
-                embeds: [buildQueueEndedEmbed()],
+                embeds: [buildQueueEndedEmbed(queue.guild.client)],
                 components: [],
             });
         } catch {
@@ -519,13 +511,7 @@ function buildMoreMenuPayload(queue: GuildQueue<PlaybackMetadata>) {
     };
 }
 
-function buildClosedPanelPayload() {
-    return {
-        content: 'Extra controls closed.',
-        embeds: [],
-        components: [],
-    };
-}
+
 
 function buildEffectsPanelPayload(queue: GuildQueue<PlaybackMetadata>) {
     const activeEffect = getActiveEffect(queue);
@@ -1111,10 +1097,7 @@ export async function handlePlaybackInteraction(
     player: Player,
 ) {
     if (interaction.isButton()) {
-        if (interaction.customId === `${PANEL_PREFIX}:close`) {
-            await interaction.update(buildClosedPanelPayload());
-            return true;
-        }
+        
 
         if (interaction.customId === `${PANEL_PREFIX}:menu`) {
             const queue = await ensureSharedVoiceChannel(interaction, player);
