@@ -880,7 +880,11 @@ async function handleLyricsButtonAction(interaction: ButtonInteraction, player: 
     const queue = await ensureSharedVoiceChannel(interaction, player);
     if (!queue) return true;
 
-    const [, , panel, action, arg, pageToken] = interaction.customId.split(':');
+    const parts = interaction.customId.split(':');
+    const panel = parts[1];
+    const action = parts[2];
+    const arg = parts[3];
+    const pageToken = parts[4];
     if (panel !== 'lyrics') return false;
 
     const currentPage = parseIntToken(pageToken, 0);
@@ -907,7 +911,10 @@ async function handleEffectsButtonAction(interaction: ButtonInteraction, player:
     const queue = await ensureSharedVoiceChannel(interaction, player);
     if (!queue) return true;
 
-    const [, , panel, action, effect] = interaction.customId.split(':');
+    const parts = interaction.customId.split(':');
+    const panel = parts[1];
+    const action = parts[2];
+    const effect = parts[3];
     if (panel !== 'effects' || action !== 'apply') return false;
 
     await interaction.deferUpdate().catch(() => null);
@@ -931,7 +938,9 @@ async function handleFavoritesOpen(interaction: ButtonInteraction, player: Playe
     const queue = await ensureSharedVoiceChannel(interaction, player);
     if (!queue) return true;
 
-    const [, , , , pageToken, selectedToken] = interaction.customId.split(':');
+    const parts = interaction.customId.split(':');
+    const pageToken = parts[4];
+    const selectedToken = parts[5];
     const page = parseIntToken(pageToken, 0);
     const selectedIndex = parseIntToken(selectedToken, 0);
     const favorites = await listFavorites(interaction.user.id);
@@ -945,7 +954,12 @@ async function handleFavoritesButtonAction(interaction: ButtonInteraction, playe
     const queue = await ensureSharedVoiceChannel(interaction, player);
     if (!queue) return true;
 
-    const [, , panel, action, arg, pageToken, selectedToken] = interaction.customId.split(':');
+    const parts = interaction.customId.split(':');
+    const panel = parts[1];
+    const action = parts[2];
+    const arg = parts[3];
+    const pageToken = parts[4];
+    const selectedToken = parts[5];
     if (panel !== 'favorites') return false;
 
     const page = parseIntToken(pageToken, 0);
@@ -1062,10 +1076,10 @@ export async function playTrack({ player, member, query, textChannel, requestedB
             leaveOnEmpty: true,
             leaveOnEmptyCooldown: 300_000,
             leaveOnEnd: true,
-            leaveOnEndCooldown: 60_000,
+            leaveOnEndCooldown: 120_000,
             leaveOnStop: true,
-            volume: 80,
-            maxHistorySize: 20,
+            volume: 100,
+            maxHistorySize: 30,
             disableFallbackStream,
         },
     });
@@ -1181,7 +1195,11 @@ export async function handlePlaybackInteraction(
     player: Player,
 ) {
     if (interaction.isButton()) {
-        
+        if (interaction.customId === `${PANEL_PREFIX}:close`) {
+            await interaction.deferUpdate().catch(() => null);
+            await interaction.deleteReply().catch(() => null);
+            return true;
+        }
 
         if (interaction.customId === `${PANEL_PREFIX}:menu`) {
             const queue = await ensureSharedVoiceChannel(interaction, player);
