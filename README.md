@@ -2,6 +2,8 @@
 
 A small and friendly Discord music bot — search, playback, sound effects, autoplay and favorites. Designed for a smooth and (fr) catchy UX.
 
+<img width="785" height="395" alt="image" src="https://github.com/user-attachments/assets/42d59a06-1f84-44f3-857b-1aaabd8dd7ce" />
+
 The project is built with TypeScript, `discord.js`, and `discord-player`.
 
 ## Features
