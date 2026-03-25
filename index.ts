@@ -4,8 +4,8 @@ import { DependencyReportGenerator } from 'discord-player';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createPlayer } from './player';
-import { attachPlayerEvents, handlePlaybackInteraction } from './playback';
+import { createPlayer } from './player.js';
+import { attachPlayerEvents, handlePlaybackInteraction } from './playback.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -74,10 +74,11 @@ client.commands = new Collection();
 
 const foldersPath = path.join(__dirname, 'commands');
 const commandFolders = fs.readdirSync(foldersPath);
+const commandFileExtension = path.extname(__filename) || '.js';
 
 for (const folder of commandFolders) {
     const commandsPath = path.join(foldersPath, folder);
-    const commandFiles = fs.readdirSync(commandsPath).filter((file) => file.endsWith('.ts'));
+    const commandFiles = fs.readdirSync(commandsPath).filter((file) => file.endsWith(commandFileExtension));
 
     for (const file of commandFiles) {
         const filePath = path.join(commandsPath, file);

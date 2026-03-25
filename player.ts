@@ -1,10 +1,18 @@
 import { AppleMusicExtractor, SoundCloudExtractor, SpotifyExtractor } from '@discord-player/extractor';
-import { Player, type Track } from 'discord-player';
+import { onStreamExtracted, Player, type Track } from 'discord-player';
 import type { Client } from 'discord.js';
 import fs from 'node:fs';
 import { YoutubeSabrExtractor } from 'discord-player-googlevideo';
 import { YoutubeiExtractor } from 'discord-player-youtubei';
 import youtubedl from 'youtube-dl-exec';
+import { logStreamExtracted } from './telemetry.js';
+
+const DEFAULT_YOUTUBE_STREAM_HIGH_WATER_MARK = 1 << 25;
+
+function getYoutubeStreamHighWaterMark() {
+    const raw = Number.parseInt(process.env.YOUTUBE_STREAM_HIGH_WATER_MARK ?? '', 10);
+    return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_YOUTUBE_STREAM_HIGH_WATER_MARK;
+}
 
 function createYoutubeDlStream(url: string, cookieFile?: string) {
     const process = youtubedl.exec(url, {
@@ -47,6 +55,9 @@ export async function createPlayer(client: Client) {
     const youtubeDlPath = (youtubedl as any).constants?.YOUTUBE_DL_PATH as string | undefined;
     const hasYoutubeDlBinary = Boolean(youtubeDlPath && fs.existsSync(youtubeDlPath));
     const hasYtDlpCookieFile = Boolean(ytDlpCookieFile && fs.existsSync(ytDlpCookieFile));
+    const youtubeStreamHighWaterMark = getYoutubeStreamHighWaterMark();
+
+    onStreamExtracted(async (stream, track, queue) => logStreamExtracted(queue, track, stream));
 
     if (youtubeExtractor === 'googlevideo') {
         await player.extractors.register(YoutubeSabrExtractor, {});
@@ -58,7 +69,7 @@ export async function createPlayer(client: Client) {
             overrideBridgeMode: 'yt',
             streamOptions: {
                 useClient: 'ANDROID',
-                highWaterMark: 1 << 25,
+                highWaterMark: youtubeStreamHighWaterMark,
             },
             logLevel: 'NONE',
         };

@@ -4,11 +4,13 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "start": "tsx index.ts",
     "dev": "tsx watch index.ts",
-    "start:prod": "tsx index.ts",
+    "start:prod": "node dist/index.js",
     "start:bun": "bun --bun --watch index.ts",
-    "deploy": "tsx deploy-commands.ts"
+    "deploy": "tsx deploy-commands.ts",
+    "deploy:prod": "node dist/deploy-commands.js"
   },
   "devDependencies": {
     "@types/bun": "latest",

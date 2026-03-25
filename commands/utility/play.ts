@@ -1,6 +1,6 @@
 import { GuildMember, MessageFlags, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import type { Player } from 'discord-player';
-import { getPlaybackErrorMessage, playTrack } from '../../playback';
+import { bumpPlaybackPanel, getPlaybackErrorMessage, playTrack } from '../../playback.js';
 
 export const data = new SlashCommandBuilder()
     .setName('play')
@@ -43,6 +43,11 @@ export async function execute({ interaction, player }: { interaction: ChatInputC
         const details = result.playlistTitle ? `playlist **${result.playlistTitle}**` : `**${result.track.title}**`;
 
         await interaction.editReply(`${action}: ${details}`);
+
+        const queue = player.nodes.get(interaction.guildId);
+        if (queue) {
+            await bumpPlaybackPanel(queue as any, 'playCommandReply');
+        }
     } catch (error) {
         await interaction.editReply(getPlaybackErrorMessage(error));
     }

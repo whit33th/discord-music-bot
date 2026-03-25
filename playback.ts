@@ -14,7 +14,8 @@ import {
     type StringSelectMenuInteraction,
     type User,
 } from 'discord.js';
-import { listFavorites, removeFavorite, saveFavorite, type FavoriteEntry } from './favorites';
+import { listFavorites, removeFavorite, saveFavorite, type FavoriteEntry } from './favorites.js';
+import { logPlaybackPhase, logQueuePlaybackPhase, markPlayerStart, startPlaybackTrace } from './telemetry.js';
 
 const BOT_BUSY_ERROR = 'BOT_BUSY_IN_ANOTHER_CHANNEL';
 const CONTROL_PREFIX = 'musicctl';
@@ -107,6 +108,10 @@ type LyricsView = {
 const lyricsCache = new Map<string, LyricsView>();
 const fadingQueues = new Set<string>();
 const panelSyncTasks = new Map<string, Promise<void>>();
+
+function isYouTubeQuery(query: string) {
+    return query.startsWith('ytsearch:') || /(?:youtube\.com|youtu\.be)/i.test(query);
+}
 
 function isPlaybackMetadata(value: unknown): value is PlaybackMetadata {
     return typeof value === 'object'
@@ -410,13 +415,31 @@ function buildControls(queue: GuildQueue<PlaybackMetadata>) {
     ];
 }
 
-async function syncControlPanel(queue: GuildQueue<PlaybackMetadata>, sendIfMissing = true, bump = false) {
+async function syncControlPanel(
+    queue: GuildQueue<PlaybackMetadata>,
+    sendIfMissing = true,
+    reason = 'unknown',
+    bump = false,
+) {
     return queuePanelSync(queue, async () => {
         const metadata = getPlaybackMetadata(queue.metadata);
-        if (!metadata) return;
+        if (!metadata) {
+            logQueuePlaybackPhase(queue, 'control_panel_sync_end', { reason, outcome: 'no_metadata' });
+            return;
+        }
+
+        logQueuePlaybackPhase(queue, 'control_panel_sync_start', {
+            reason,
+            sendIfMissing,
+            hasControlMessage: Boolean(metadata.controlMessage),
+            currentTrack: queue.currentTrack?.title ?? null,
+        });
 
         const embed = await buildMainControlEmbed(queue);
-        if (!embed) return;
+        if (!embed) {
+            logQueuePlaybackPhase(queue, 'control_panel_sync_end', { reason, outcome: 'no_current_track' });
+            return;
+        }
 
         const payload = {
             embeds: [embed],
@@ -432,6 +455,7 @@ async function syncControlPanel(queue: GuildQueue<PlaybackMetadata>, sendIfMissi
             try {
                 metadata.controlMessage = await metadata.controlMessage.edit(payload);
                 queue.setMetadata(metadata);
+                logQueuePlaybackPhase(queue, 'control_panel_sync_end', { reason, outcome: 'edited' });
                 return;
             } catch {
                 metadata.controlMessage = null;
@@ -440,18 +464,29 @@ async function syncControlPanel(queue: GuildQueue<PlaybackMetadata>, sendIfMissi
 
         if (!sendIfMissing) {
             queue.setMetadata(metadata);
+            logQueuePlaybackPhase(queue, 'control_panel_sync_end', { reason, outcome: 'missing_message_skipped' });
             return;
         }
 
         try {
             metadata.controlMessage = await metadata.textChannel.send(payload);
             queue.setMetadata(metadata);
+            logQueuePlaybackPhase(queue, 'control_panel_sync_end', { reason, outcome: 'sent' });
         } catch (error) {
             console.error(`[control-panel:${queue.guild.id}]`, error);
             metadata.controlMessage = null;
             queue.setMetadata(metadata);
+            logQueuePlaybackPhase(queue, 'control_panel_sync_end', {
+                reason,
+                outcome: 'send_failed',
+                error: error instanceof Error ? error.message : String(error),
+            });
         }
     });
+}
+
+export async function bumpPlaybackPanel(queue: GuildQueue<PlaybackMetadata>, reason = 'commandReply') {
+    await syncControlPanel(queue, true, reason, true);
 }
 
 async function showQueueEndedPanel(queue: GuildQueue<PlaybackMetadata>) {
@@ -880,7 +915,7 @@ async function handleEffectsButtonAction(interaction: ButtonInteraction, player:
     try {
         await setEffect(queue as GuildQueue<PlaybackMetadata>, effect as EffectKey | 'clear');
         await interaction.editReply(buildEffectsPanelPayload(queue as GuildQueue<PlaybackMetadata>)).catch(() => null);
-        await syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false);
+        await syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false, 'effectsApply');
     } catch (error) {
         console.error('[effects-panel]', error);
         await interaction.followUp({
@@ -954,7 +989,7 @@ async function handleFavoritesButtonAction(interaction: ButtonInteraction, playe
             content: `Queued **${track.title}** from favorites.`,
             flags: MessageFlags.Ephemeral,
         }).catch(() => null);
-        await syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false);
+        await syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false, 'favoritesQueue');
         return true;
     }
 
@@ -1003,9 +1038,24 @@ export async function playTrack({ player, member, query, textChannel, requestedB
     const metadata = buildMetadata(textChannel, existingQueue);
     const wasPlaying = Boolean(existingQueue?.isPlaying());
     const normalizedQuery = isUrl(query) ? query : `ytsearch:${query}`;
+    const searchEngine = normalizedQuery.startsWith('ytsearch:') ? getYouTubeSearchEngine() : QueryType.AUTO_SEARCH;
+    const disableFallbackStream = isYouTubeQuery(normalizedQuery);
+
+    startPlaybackTrace({
+        guildId: voiceChannel.guild.id,
+        query,
+        requestedBy: requestedBy.id,
+        wasPlaying,
+        searchEngine: String(searchEngine),
+    });
+    logPlaybackPhase(voiceChannel.guild.id, 'player_play_start', {
+        normalizedQuery,
+        disableFallbackStream,
+    });
+
     const result = await player.play(voiceChannel, normalizedQuery, {
         requestedBy,
-        searchEngine: normalizedQuery.startsWith('ytsearch:') ? getYouTubeSearchEngine() : QueryType.AUTO_SEARCH,
+        searchEngine,
         nodeOptions: {
             metadata,
             selfDeaf: true,
@@ -1016,11 +1066,20 @@ export async function playTrack({ player, member, query, textChannel, requestedB
             leaveOnStop: true,
             volume: 80,
             maxHistorySize: 20,
+            disableFallbackStream,
         },
     });
 
     result.queue.setMetadata(metadata);
-    await syncControlPanel(result.queue as GuildQueue<PlaybackMetadata>, true, true);
+    logPlaybackPhase(voiceChannel.guild.id, 'player_play_complete', {
+        trackTitle: result.track.title,
+        playlistTitle: result.searchResult.playlist?.title ?? null,
+        queueSize: result.queue.size,
+    });
+
+    if (wasPlaying) {
+        await syncControlPanel(result.queue as GuildQueue<PlaybackMetadata>, true, 'playTrack:queue_update');
+    }
 
     return {
         track: result.track,
@@ -1032,54 +1091,79 @@ export async function playTrack({ player, member, query, textChannel, requestedB
 export function attachPlayerEvents(player: Player) {
     player.events.on('playerStart', (queue) => {
         lyricsCache.delete(queue.currentTrack?.url ?? '');
-        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, true, true);
+        markPlayerStart(queue, queue.currentTrack);
+        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, true, 'playerStart');
     });
 
     player.events.on('audioTrackAdd', (queue) => {
-        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, true, true);
+        logQueuePlaybackPhase(queue, 'audio_track_add', {
+            trackTitle: queue.tracks.at(-1)?.title ?? null,
+            queueSize: queue.size,
+        });
+        if (!queue.currentTrack && !queue.isPlaying()) {
+            return;
+        }
+        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, true, 'audioTrackAdd');
     });
 
     player.events.on('audioTracksAdd', (queue) => {
-        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, true, true);
+        logQueuePlaybackPhase(queue, 'audio_tracks_add', {
+            queueSize: queue.size,
+        });
+        if (!queue.currentTrack && !queue.isPlaying()) {
+            return;
+        }
+        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, true, 'audioTracksAdd');
     });
 
     player.events.on('playerPause', (queue) => {
-        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>);
+        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, true, 'playerPause');
     });
 
     player.events.on('playerResume', (queue) => {
-        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>);
+        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, true, 'playerResume');
     });
 
     player.events.on('volumeChange', (queue) => {
         if (fadingQueues.has(queue.guild.id)) {
             return;
         }
-        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>);
+        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, true, 'volumeChange');
     });
 
     player.events.on('audioFiltersUpdate', (queue) => {
-        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>);
+        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, true, 'audioFiltersUpdate');
     });
 
     player.events.on('emptyQueue', (queue) => {
+        logQueuePlaybackPhase(queue, 'empty_queue');
         void showQueueEndedPanel(queue as GuildQueue<PlaybackMetadata>);
     });
 
     player.events.on('disconnect', (queue) => {
-        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false);
+        logQueuePlaybackPhase(queue, 'disconnect');
+        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false, 'disconnect');
     });
 
     player.events.on('queueDelete', (queue) => {
-        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false);
+        logQueuePlaybackPhase(queue, 'queue_delete');
+        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false, 'queueDelete');
     });
 
     player.events.on('error', (queue, error) => {
         console.error(`[queue:${queue.guild.id}]`, error);
+        logQueuePlaybackPhase(queue, 'queue_error', {
+            error: error.message,
+        });
     });
 
     player.events.on('playerError', async (queue, error, track) => {
         console.error(`[track:${track.title}]`, error);
+        logQueuePlaybackPhase(queue, 'player_error', {
+            trackTitle: track.title,
+            extractorId: track.bridgedExtractor?.identifier ?? track.extractor?.identifier ?? null,
+            error: error.message,
+        });
 
         const metadata = getPlaybackMetadata(queue.metadata);
         if (!metadata) return;
@@ -1088,7 +1172,7 @@ export function attachPlayerEvents(player: Player) {
             content: `Failed to play **${track.title}**.`,
         }).catch(() => null);
 
-        await syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false).catch(() => null);
+        await syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false, 'playerError').catch(() => null);
     });
 }
 
@@ -1190,7 +1274,7 @@ export async function handlePlaybackInteraction(
                 return false;
             }
 
-            await syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false);
+            await syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false, `control:${action}`);
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Could not update the player.';
             await interaction.followUp({ content: message, flags: MessageFlags.Ephemeral }).catch(() => null);
