@@ -358,7 +358,7 @@ function buildPrimaryControlEmbed(queue: GuildQueue<PlaybackMetadata>) {
 
     const embed = new EmbedBuilder()
         .setColor(EMBED_COLOR)
-        .setAuthor({ name: 'MUSIC PANEL' })
+        .setAuthor({ name: '<:moony:1486109960973844512> MUSIC PANEL' })
         .setTitle(truncate(currentTrack.title, 256))
         .setURL(currentTrack.url)
         .addFields(
