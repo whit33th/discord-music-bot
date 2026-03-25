@@ -3,6 +3,7 @@ import {
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
+    Client,
     EmbedBuilder,
     MessageFlags,
     StringSelectMenuBuilder,
@@ -117,6 +118,7 @@ type LyricsView = {
 const lyricsCache = new Map<string, LyricsView>();
 const fadingQueues = new Set<string>();
 const textEmojiCache = new Map<string, string>();
+const panelSyncTasks = new Map<string, Promise<void>>();
 
 function isPlaybackMetadata(value: unknown): value is PlaybackMetadata {
     return typeof value === 'object'
@@ -127,6 +129,25 @@ function isPlaybackMetadata(value: unknown): value is PlaybackMetadata {
 
 function getPlaybackMetadata(value: unknown): PlaybackMetadata | null {
     return isPlaybackMetadata(value) ? value : null;
+}
+
+function queuePanelSync(queue: GuildQueue<PlaybackMetadata>, task: () => Promise<void>) {
+    const guildId = queue.guild.id;
+    const previousTask = panelSyncTasks.get(guildId) ?? Promise.resolve();
+    const nextTask = previousTask
+        .catch(() => undefined)
+        .then(task)
+        .catch((error) => {
+            console.error(`[control-panel:${guildId}]`, error);
+        })
+        .finally(() => {
+            if (panelSyncTasks.get(guildId) === nextTask) {
+                panelSyncTasks.delete(guildId);
+            }
+        });
+
+    panelSyncTasks.set(guildId, nextTask);
+    return nextTask;
 }
 
 function getVoiceChannel(member: GuildMember) {
@@ -341,25 +362,16 @@ function createControlButton(customId: string, label: string, emoji: string, dis
     return button;
 }
 
-function buildPrimaryControlEmbed(queue: GuildQueue<PlaybackMetadata>) {
+async function buildMainControlEmbed(queue: GuildQueue<PlaybackMetadata>) {
     const currentTrack = queue.currentTrack;
+    if (!currentTrack) return null;
 
-    if (!currentTrack) {
-        return new EmbedBuilder()
-            .setColor(EMBED_COLOR)
-            .setAuthor({ name: 'MUSIC PANEL' })
-            .setTitle('Playback Idle')
-            .addFields(
-                { name: 'Queue', value: `${queue.size} waiting`, inline: true },
-                { name: 'Volume', value: `${getQueueVolume(queue)}%`, inline: true },
-                { name: 'Loop', value: getRepeatLabel(queue.repeatMode), inline: true },
-            );
-    }
-
-    const embed = new EmbedBuilder()
-        .setColor(EMBED_COLOR)
-        .setTitle('<:moony:1486109960973844512> MUSIC PANEL')
-        // .setTitle(truncate(currentTrack.title, 256))
+    const embed = new EmbedBuilder();
+    embed.setAuthor({
+        name: currentTrack.requestedBy?.username ?? 'Unknown',
+        iconURL: currentTrack.requestedBy?.displayAvatarURL({ forceStatic: false, size: 128 })
+    })
+        .setTitle(truncate(currentTrack.title, 256))
         .setURL(currentTrack.url)
         .addFields(
             {
@@ -378,51 +390,15 @@ function buildPrimaryControlEmbed(queue: GuildQueue<PlaybackMetadata>) {
     return embed;
 }
 
-async function buildMainControlEmbed(queue: GuildQueue<PlaybackMetadata>) {
-    const currentTrack = queue.currentTrack;
-    const queueIcon = await resolveTextEmoji(TEXT_ICON_QUEUE, queue.guild.client);
-    const volumeIcon = await resolveTextEmoji(TEXT_ICON_VOLUME, queue.guild.client);
-    const loopIcon = await resolveTextEmoji(TEXT_ICON_LOOP, queue.guild.client);
-    const titleIcon = await resolveTextEmoji(TEXT_ICON_TITLE, queue.guild.client);
-    const requestedByIcon = await resolveTextEmoji('👤', queue.guild.client);
-    const durationIcon = await resolveTextEmoji(TEXT_ICON_DURATION, queue.guild.client);
-    const artistIcon = await resolveTextEmoji(TEXT_ICON_ARTIST, queue.guild.client);
-
-    if (!currentTrack) {
-        return new EmbedBuilder()
-            .setColor(EMBED_COLOR)
-            .setAuthor({ name: 'MOON MUSIC PANEL' })
-            .setTitle('Playback Idle')
-            .setDescription('Start another track with `/play`.')
-            .addFields(
-                { name: `<1486104256619479276> Queue`, value: `${queue.size} waiting`, inline: true },
-                { name: `${volumeIcon} Volume`, value: `${getQueueVolume(queue)}%`, inline: true },
-                { name: `${loopIcon} Loop`, value: getRepeatLabel(queue.repeatMode), inline: true },
-            );
-    }
-
-    const nextTrack = queue.tracks.at(0);
-    const embed = new EmbedBuilder()
+function buildQueueEndedEmbed(client: Client) {
+    return new EmbedBuilder()
         .setColor(EMBED_COLOR)
-        .setAuthor({ name: 'MOON MUSIC PANEL' })
-        .setTitle(`${titleIcon} ${truncate(currentTrack.title, 248)}`)
-        .setURL(currentTrack.url)
-        .setDescription(nextTrack ? `Up next: **${truncate(nextTrack.title, 52)}**` : 'No next track in queue.')
-        .addFields(
-            {
-                name: `${requestedByIcon} Requested By`,
-                value: currentTrack.requestedBy ? `${currentTrack.requestedBy}` : 'Unknown',
-                inline: true,
-            },
-            { name: `${durationIcon} Music Duration`, value: currentTrack.duration || 'Live', inline: true },
-            { name: `${artistIcon} Music Author`, value: truncate(currentTrack.author || 'Unknown Artist', 64), inline: true },
-        );
-
-    if (currentTrack.thumbnail) {
-        embed.setThumbnail(currentTrack.thumbnail);
-    }
-
-    return embed;
+        .setAuthor({
+            name: client.user?.username ?? 'Bot',
+            iconURL: client.user?.displayAvatarURL({ forceStatic: false, size: 128 })
+        })
+        .setTitle('Queue Ended!')
+        .setDescription('All songs have been played! You can add songs again using `/play` command.');
 }
 
 function buildControls(queue: GuildQueue<PlaybackMetadata>) {
@@ -451,84 +427,68 @@ function buildControls(queue: GuildQueue<PlaybackMetadata>) {
     ];
 }
 
-function buildControlEmbed(queue: GuildQueue<PlaybackMetadata>) {
-    const currentTrack = queue.currentTrack;
-
-    if (!currentTrack) {
-        return new EmbedBuilder()
-            .setColor(EMBED_COLOR)
-            .setTitle('Playback Idle')
-            .setDescription('Start another track with `/play`.')
-            .addFields(
-                { name: '📚 Queue', value: `${queue.size} waiting`, inline: true },
-                { name: '🔊 Volume', value: `${getQueueVolume(queue)}%`, inline: true },
-                { name: '🔁 Loop', value: getRepeatLabel(queue.repeatMode), inline: true },
-            );
-    }
-
-    const nextTrack = queue.tracks.at(0);
-    const embed = new EmbedBuilder()
-        .setColor(EMBED_COLOR)
-        .setAuthor({ name: 'MOON MUSIC PANEL' })
-        .setTitle(truncate(currentTrack.title, 256))
-        .setURL(currentTrack.url)
-        .setDescription([
-            nextTrack ? `Up next: **${truncate(nextTrack.title, 52)}**` : 'No next track in queue.',
-        ].join('\n'))
-        .addFields(
-            {
-                name: '👤 Requested By',
-                value: currentTrack.requestedBy ? `${currentTrack.requestedBy}` : 'Unknown',
-                inline: true,
-            },
-            { name: '⏱️ Music Duration', value: currentTrack.duration || 'Live', inline: true },
-            { name: '🎙️ Music Author', value: truncate(currentTrack.author || 'Unknown Artist', 64), inline: true },
-        );
-
-    if (currentTrack.thumbnail) {
-        embed.setThumbnail(currentTrack.thumbnail);
-    }
-
-    return embed;
-}
-
 async function syncControlPanel(queue: GuildQueue<PlaybackMetadata>, sendIfMissing = true, bump = false) {
-    const metadata = getPlaybackMetadata(queue.metadata);
-    if (!metadata) return;
+    return queuePanelSync(queue, async () => {
+        const metadata = getPlaybackMetadata(queue.metadata);
+        if (!metadata) return;
 
-    const payload = {
-        embeds: [buildPrimaryControlEmbed(queue)],
-        components: buildControls(queue),
-    };
+        const embed = await buildMainControlEmbed(queue);
+        if (!embed) return;
 
-    if (bump && metadata.controlMessage) {
-        await metadata.controlMessage.delete().catch(() => null);
-        metadata.controlMessage = null;
-    }
+        const payload = {
+            embeds: [embed],
+            components: buildControls(queue),
+        };
 
-    if (metadata.controlMessage) {
-        try {
-            metadata.controlMessage = await metadata.controlMessage.edit(payload);
+        if (bump && metadata.controlMessage) {
+            await metadata.controlMessage.delete().catch(() => null);
+            metadata.controlMessage = null;
+        }
+
+        if (metadata.controlMessage) {
+            try {
+                metadata.controlMessage = await metadata.controlMessage.edit(payload);
+                queue.setMetadata(metadata);
+                return;
+            } catch {
+                metadata.controlMessage = null;
+            }
+        }
+
+        if (!sendIfMissing) {
             queue.setMetadata(metadata);
             return;
+        }
+
+        try {
+            metadata.controlMessage = await metadata.textChannel.send(payload);
+            queue.setMetadata(metadata);
+        } catch (error) {
+            console.error(`[control-panel:${queue.guild.id}]`, error);
+            metadata.controlMessage = null;
+            queue.setMetadata(metadata);
+        }
+    });
+}
+
+async function showQueueEndedPanel(queue: GuildQueue<PlaybackMetadata>) {
+    return queuePanelSync(queue, async () => {
+        const metadata = getPlaybackMetadata(queue.metadata);
+        if (!metadata?.controlMessage) {
+            return;
+        }
+
+        try {
+            metadata.controlMessage = await metadata.controlMessage.edit({
+                embeds: [buildQueueEndedEmbed()],
+                components: [],
+            });
         } catch {
             metadata.controlMessage = null;
         }
-    }
 
-    if (!sendIfMissing) {
         queue.setMetadata(metadata);
-        return;
-    }
-
-    try {
-        metadata.controlMessage = await metadata.textChannel.send(payload);
-        queue.setMetadata(metadata);
-    } catch (error) {
-        console.error(`[control-panel:${queue.guild.id}]`, error);
-        metadata.controlMessage = null;
-        queue.setMetadata(metadata);
-    }
+    });
 }
 
 function buildMetadata(textChannel: GuildTextBasedChannel, queue: GuildQueue | null): PlaybackMetadata {
@@ -550,12 +510,7 @@ function buildMoreMenuPayload(queue: GuildQueue<PlaybackMetadata>) {
         embeds: [
             new EmbedBuilder()
                 .setColor(EMBED_COLOR)
-                .setTitle('More Controls')
-                .setDescription([
-                    `Now playing: ${currentTrack ? `**${truncate(currentTrack.title, 56)}**` : 'Nothing'}`,
-                    '',
-                    'Open queue, lyrics, effects or your saved favorites.',
-                ].join('\n'))
+                .setTitle('Controls')
                 .addFields(
                     { name: 'Volume', value: `${getQueueVolume(queue)}%`, inline: true },
                     { name: 'Autoplay', value: isAutoplayEnabled(queue) ? 'On' : 'Off', inline: true },
@@ -666,7 +621,6 @@ function buildEffectsPanelPayload(queue: GuildQueue<PlaybackMetadata>) {
             new EmbedBuilder()
                 .setColor(EMBED_COLOR)
                 .setTitle('Audio Effects')
-                .setDescription('Choose one preset. Applying a new preset replaces the previous one.')
                 .addFields(
                     { name: 'Current', value: activeEffect ? EFFECT_FILTERS[activeEffect].label : 'Off', inline: true },
                     { name: 'Track', value: queue.currentTrack ? truncate(queue.currentTrack.title, 48) : 'Nothing', inline: true },
@@ -1296,7 +1250,7 @@ export function attachPlayerEvents(player: Player) {
     });
 
     player.events.on('emptyQueue', (queue) => {
-        void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false);
+        void showQueueEndedPanel(queue as GuildQueue<PlaybackMetadata>);
     });
 
     player.events.on('disconnect', (queue) => {
