@@ -1,6 +1,5 @@
 # Discord Music Bot
 
-A small and friendly music bot for Discord. It can find tracks by name or link, queue them, manage playback, and save favorites for each user.
 A small and friendly Discord music bot — search, playback, sound effects, autoplay and favorites. Designed for a smooth and (fr) catchy UX.
 
 The project is built with TypeScript, `discord.js`, and `discord-player`.
