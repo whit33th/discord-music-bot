@@ -1,3 +1,4 @@
+import { QueryType, QueueRepeatMode, type GuildQueue, type LrcSearchResult, type Player, type Track } from 'discord-player';
 import {
     ActionRowBuilder,
     ButtonBuilder,
@@ -12,51 +13,56 @@ import {
     type StringSelectMenuInteraction,
     type User,
 } from 'discord.js';
-import { QueryType, QueueRepeatMode, type GuildQueue, type LrcSearchResult, type Player, type Track } from 'discord-player';
 import { listFavorites, removeFavorite, saveFavorite, type FavoriteEntry } from './favorites';
 
 const BOT_BUSY_ERROR = 'BOT_BUSY_IN_ANOTHER_CHANNEL';
 const CONTROL_PREFIX = 'musicctl';
 const PANEL_PREFIX = 'musicpanel';
-const EMBED_COLOR = 0x2c2c2e;
+const EMBED_COLOR = 0x111218;
 const PAGE_SIZE = 8;
 const LYRICS_PAGE_SIZE = 14;
 const VOLUME_STEP = 10;
-const SEEK_STEP_MS = 10_000;
 const SEEK_FADE_OUT_MS = 300;
 const SEEK_FADE_IN_MS = 300;
 const FADE_STEPS = 6;
 const GOOGLEVIDEO_EXTRACTOR_ID = 'ext:com.github.xxczaki.youtube-sabr';
 const YOUTUBEI_EXTRACTOR_ID = 'ext:com.retrouser955.discord-player.discord-player-youtubei';
 
-const EMOJI_VOLUME_DOWN = '\u{1F509}';
-const EMOJI_VOLUME_UP = '\u{1F50A}';
-const EMOJI_SEEK_BACK = '\u23EA';
-const EMOJI_SEEK_FORWARD = '\u23E9';
-const EMOJI_PLAY = '\u25B6\uFE0F';
-const EMOJI_PAUSE = '\u23F8\uFE0F';
-const EMOJI_STOP = '\u23F9\uFE0F';
-const EMOJI_SHUFFLE = '\u{1F500}';
-const EMOJI_LOOP_TRACK = '\u{1F502}';
-const EMOJI_LOOP_QUEUE = '\u{1F501}';
-const EMOJI_AUTOPLAY = '\u{1F4FB}';
-const EMOJI_MORE = '\u2728';
-const EMOJI_QUEUE = '\u{1F4CB}';
-const EMOJI_LYRICS = '\u{1F3A4}';
-const EMOJI_EFFECTS = '\u{1F39B}\uFE0F';
-const EMOJI_FAVORITES = '\u2B50';
-const EMOJI_CLOSE = '\u2716\uFE0F';
-const EMOJI_REMOVE = '\u{1F5D1}\uFE0F';
-const EMOJI_BASS = '\u{1F50A}';
-const EMOJI_NIGHTCORE = '\u{1F525}';
-const EMOJI_8D = '\u{1F300}';
+const EMOJI_VOLUME_DOWN = '1486416641708392499';
+const EMOJI_VOLUME_UP = '1486416638818517002';
+const EMOJI_PREVIOUS = '1486104259937435709';
+const EMOJI_NEXT = '1486104245299183738';
+const EMOJI_PLAY = '1486104239511044326';
+const EMOJI_PAUSE = '1486104243890028594';
+const EMOJI_STOP = '1486104254652616896';
+const EMOJI_SHUFFLE = '1486104263938801874';
+const EMOJI_LOOP_TRACK = '1486104266522493060';
+const EMOJI_LOOP_QUEUE = '1486110000290988063';
+const EMOJI_AUTOPLAY = '1486109960973844512';
+const EMOJI_MORE = '1486110006112817232';
+const EMOJI_QUEUE = '1486104256619479276';
+const EMOJI_LYRICS = '1486417808072900678';
+const EMOJI_EFFECTS = '1486104284289568940';
+const EMOJI_FAVORITES = '1486104262655086754';
+const EMOJI_CLOSE = '1486116488791457812';
+const EMOJI_REMOVE = '1486412564681195571';
+const EMOJI_BASS = '1486110017924108288';
+const EMOJI_NIGHTCORE = '1486104289750286458';
+const EMOJI_8D = '1486109951133745212';
 const EMOJI_CLEAR = '\u{1F9F9}';
 
-const ICON_QUEUE_MOVE_UP = '\u2191';
-const ICON_QUEUE_MOVE_DOWN = '\u2193';
-const ICON_QUEUE_REMOVE = '\u2212';
-const ICON_PAGE_PREV = '\u2039';
-const ICON_PAGE_NEXT = '\u203A';
+const ICON_QUEUE_MOVE_UP = '1486117064371343535';
+const ICON_QUEUE_MOVE_DOWN = '1486117062702006374';
+const ICON_QUEUE_REMOVE = '1486116487189106708';
+const ICON_PAGE_PREV = '1486117061548703794';
+const ICON_PAGE_NEXT = '1486117059711729785';
+const TEXT_ICON_ARTIST = 'artist:1486104236562317474';
+const TEXT_ICON_DURATION = 'duration:1486104258162987220';
+const TEXT_ICON_QUEUE = 'queue:1486104256619479276';
+
+const TEXT_ICON_VOLUME = '🔊';
+const TEXT_ICON_LOOP = '🔁';
+const TEXT_ICON_TITLE = '🎵';
 
 const EFFECT_FILTERS = {
     bassboost: {
@@ -110,6 +116,7 @@ type LyricsView = {
 
 const lyricsCache = new Map<string, LyricsView>();
 const fadingQueues = new Set<string>();
+const textEmojiCache = new Map<string, string>();
 
 function isPlaybackMetadata(value: unknown): value is PlaybackMetadata {
     return typeof value === 'object'
@@ -251,37 +258,188 @@ function getEffectLabel(queue: GuildQueue) {
     return activeEffect ? EFFECT_FILTERS[activeEffect].label : 'Off';
 }
 
+function resolveEmojiToken(token: string) {
+    const trimmed = token.trim();
+    if (!trimmed) return null;
+
+    if (/^\d{17,20}$/.test(trimmed)) {
+        return { id: trimmed };
+    }
+
+    const customMatch = trimmed.match(/^<(a?):([a-zA-Z0-9_]+):(\d{17,20})>$/);
+    if (customMatch) {
+        return {
+            id: customMatch[3],
+            name: customMatch[2],
+            animated: customMatch[1] === 'a',
+        };
+    }
+
+    if (/\p{Extended_Pictographic}/u.test(trimmed)) {
+        return { name: trimmed };
+    }
+
+    return null;
+}
+
+function formatTextEmoji(token: string) {
+    const trimmed = token.trim();
+    if (!trimmed) return '';
+
+    if (/^\d{17,20}$/.test(trimmed)) {
+        return trimmed;
+    }
+
+    const shortCustomMatch = trimmed.match(/^([a-zA-Z0-9_]+):(\d{17,20})$/);
+    if (shortCustomMatch) {
+        return `<:${shortCustomMatch[1]}:${shortCustomMatch[2]}>`;
+    }
+
+    const shortAnimatedMatch = trimmed.match(/^a:([a-zA-Z0-9_]+):(\d{17,20})$/);
+    if (shortAnimatedMatch) {
+        return `<a:${shortAnimatedMatch[1]}:${shortAnimatedMatch[2]}>`;
+    }
+
+    if (/^<(a?):([a-zA-Z0-9_]+):(\d{17,20})>$/.test(trimmed)) {
+        return trimmed;
+    }
+
+    return trimmed;
+}
+
+async function resolveTextEmoji(token: string, client: GuildMember['client']) {
+    void client;
+    return formatTextEmoji(token);
+}
+
 function createIconButton(customId: string, label: string, disabled = false) {
-    return new ButtonBuilder()
+    const button = new ButtonBuilder()
         .setCustomId(customId)
-        .setLabel(label)
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(disabled);
+
+    const emoji = resolveEmojiToken(label);
+    if (emoji) {
+        return button.setEmoji(emoji);
+    }
+
+    return button.setLabel(label);
 }
 
 function createControlButton(customId: string, label: string, emoji: string, disabled = false) {
-    return new ButtonBuilder()
+    const button = new ButtonBuilder()
         .setCustomId(customId)
         .setLabel(label)
-        .setEmoji(emoji)
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(disabled);
+
+    const resolvedEmoji = resolveEmojiToken(emoji);
+    if (resolvedEmoji) {
+        button.setEmoji(resolvedEmoji);
+    }
+
+    return button;
+}
+
+function buildPrimaryControlEmbed(queue: GuildQueue<PlaybackMetadata>) {
+    const currentTrack = queue.currentTrack;
+
+    if (!currentTrack) {
+        return new EmbedBuilder()
+            .setColor(EMBED_COLOR)
+            .setAuthor({ name: 'MUSIC PANEL' })
+            .setTitle('Playback Idle')
+            .addFields(
+                { name: 'Queue', value: `${queue.size} waiting`, inline: true },
+                { name: 'Volume', value: `${getQueueVolume(queue)}%`, inline: true },
+                { name: 'Loop', value: getRepeatLabel(queue.repeatMode), inline: true },
+            );
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor(EMBED_COLOR)
+        .setAuthor({ name: 'MUSIC PANEL' })
+        .setTitle(truncate(currentTrack.title, 256))
+        .setURL(currentTrack.url)
+        .addFields(
+            {
+                name: 'Requested By',
+                value: currentTrack.requestedBy ? `${currentTrack.requestedBy}` : 'Unknown',
+                inline: true,
+            },
+            { name: 'Music Duration', value: currentTrack.duration || 'Live', inline: true },
+            { name: 'Music Author', value: truncate(currentTrack.author || 'Unknown Artist', 64), inline: true },
+        );
+
+    if (currentTrack.thumbnail) {
+        embed.setThumbnail(currentTrack.thumbnail);
+    }
+
+    return embed;
+}
+
+async function buildMainControlEmbed(queue: GuildQueue<PlaybackMetadata>) {
+    const currentTrack = queue.currentTrack;
+    const queueIcon = await resolveTextEmoji(TEXT_ICON_QUEUE, queue.guild.client);
+    const volumeIcon = await resolveTextEmoji(TEXT_ICON_VOLUME, queue.guild.client);
+    const loopIcon = await resolveTextEmoji(TEXT_ICON_LOOP, queue.guild.client);
+    const titleIcon = await resolveTextEmoji(TEXT_ICON_TITLE, queue.guild.client);
+    const requestedByIcon = await resolveTextEmoji('👤', queue.guild.client);
+    const durationIcon = await resolveTextEmoji(TEXT_ICON_DURATION, queue.guild.client);
+    const artistIcon = await resolveTextEmoji(TEXT_ICON_ARTIST, queue.guild.client);
+
+    if (!currentTrack) {
+        return new EmbedBuilder()
+            .setColor(EMBED_COLOR)
+            .setAuthor({ name: 'MOON MUSIC PANEL' })
+            .setTitle('Playback Idle')
+            .setDescription('Start another track with `/play`.')
+            .addFields(
+                { name: `<1486104256619479276> Queue`, value: `${queue.size} waiting`, inline: true },
+                { name: `${volumeIcon} Volume`, value: `${getQueueVolume(queue)}%`, inline: true },
+                { name: `${loopIcon} Loop`, value: getRepeatLabel(queue.repeatMode), inline: true },
+            );
+    }
+
+    const nextTrack = queue.tracks.at(0);
+    const embed = new EmbedBuilder()
+        .setColor(EMBED_COLOR)
+        .setAuthor({ name: 'MOON MUSIC PANEL' })
+        .setTitle(`${titleIcon} ${truncate(currentTrack.title, 248)}`)
+        .setURL(currentTrack.url)
+        .setDescription(nextTrack ? `Up next: **${truncate(nextTrack.title, 52)}**` : 'No next track in queue.')
+        .addFields(
+            {
+                name: `${requestedByIcon} Requested By`,
+                value: currentTrack.requestedBy ? `${currentTrack.requestedBy}` : 'Unknown',
+                inline: true,
+            },
+            { name: `${durationIcon} Music Duration`, value: currentTrack.duration || 'Live', inline: true },
+            { name: `${artistIcon} Music Author`, value: truncate(currentTrack.author || 'Unknown Artist', 64), inline: true },
+        );
+
+    if (currentTrack.thumbnail) {
+        embed.setThumbnail(currentTrack.thumbnail);
+    }
+
+    return embed;
 }
 
 function buildControls(queue: GuildQueue<PlaybackMetadata>) {
     const hasTrack = Boolean(queue.currentTrack);
     const queueTracks = getQueueTracks(queue);
-    const canSeekTrack = canSeek(queue.currentTrack);
     const hasVoiceSession = Boolean(queue.channel);
     const hasPlayableContext = hasVoiceSession || hasTrack || queueTracks.length > 0;
+    const canGoPrevious = !queue.history.disabled && !queue.history.isEmpty();
+    const canGoNext = queueTracks.length > 0;
 
     return [
         new ActionRowBuilder<ButtonBuilder>().addComponents(
-            createControlButton(`${CONTROL_PREFIX}:volume_down`, 'Vol -10', EMOJI_VOLUME_DOWN, !hasPlayableContext),
-            createControlButton(`${CONTROL_PREFIX}:seek_back`, 'Seek -10', EMOJI_SEEK_BACK, !canSeekTrack),
+            createControlButton(`${CONTROL_PREFIX}:volume_down`, 'Down', EMOJI_VOLUME_DOWN, !hasPlayableContext),
+            createControlButton(`${CONTROL_PREFIX}:previous`, 'Prev', EMOJI_PREVIOUS, !canGoPrevious),
             createControlButton(`${CONTROL_PREFIX}:toggle`, isQueuePaused(queue) ? 'Play' : 'Pause', isQueuePaused(queue) ? EMOJI_PLAY : EMOJI_PAUSE, !hasTrack),
-            createControlButton(`${CONTROL_PREFIX}:seek_forward`, 'Seek +10', EMOJI_SEEK_FORWARD, !canSeekTrack),
-            createControlButton(`${CONTROL_PREFIX}:volume_up`, 'Vol +10', EMOJI_VOLUME_UP, !hasPlayableContext),
+            createControlButton(`${CONTROL_PREFIX}:next`, 'Next', EMOJI_NEXT, !canGoNext),
+            createControlButton(`${CONTROL_PREFIX}:volume_up`, 'Up', EMOJI_VOLUME_UP, !hasPlayableContext),
         ),
         new ActionRowBuilder<ButtonBuilder>().addComponents(
             createControlButton(`${CONTROL_PREFIX}:shuffle`, getShuffleButtonLabel(queue.isShuffling), EMOJI_SHUFFLE, !hasTrack || queueTracks.length === 0),
@@ -302,33 +460,29 @@ function buildControlEmbed(queue: GuildQueue<PlaybackMetadata>) {
             .setTitle('Playback Idle')
             .setDescription('Start another track with `/play`.')
             .addFields(
-                { name: 'Queue', value: `${queue.size} waiting`, inline: true },
-                { name: 'Volume', value: `${getQueueVolume(queue)}%`, inline: true },
-                { name: 'Loop', value: getRepeatLabel(queue.repeatMode), inline: true },
-                { name: 'Autoplay', value: isAutoplayEnabled(queue) ? 'On' : 'Off', inline: true },
-                { name: 'Shuffle', value: queue.isShuffling ? 'On' : 'Off', inline: true },
-                { name: 'Effects', value: getEffectLabel(queue), inline: true },
+                { name: '📚 Queue', value: `${queue.size} waiting`, inline: true },
+                { name: '🔊 Volume', value: `${getQueueVolume(queue)}%`, inline: true },
+                { name: '🔁 Loop', value: getRepeatLabel(queue.repeatMode), inline: true },
             );
     }
 
     const nextTrack = queue.tracks.at(0);
     const embed = new EmbedBuilder()
         .setColor(EMBED_COLOR)
+        .setAuthor({ name: 'MOON MUSIC PANEL' })
         .setTitle(truncate(currentTrack.title, 256))
         .setURL(currentTrack.url)
         .setDescription([
-            `by **${truncate(currentTrack.author || 'Unknown Artist', 64)}**`,
-            '',
-            `Up next: ${nextTrack ? `**${truncate(nextTrack.title, 48)}**` : 'Nothing queued'}`,
+            nextTrack ? `Up next: **${truncate(nextTrack.title, 52)}**` : 'No next track in queue.',
         ].join('\n'))
         .addFields(
-            { name: 'Duration', value: currentTrack.duration || 'Live', inline: true },
-            { name: 'Queue', value: `${queue.size} waiting`, inline: true },
-            { name: 'Volume', value: `${getQueueVolume(queue)}%`, inline: true },
-            { name: 'Loop', value: getRepeatLabel(queue.repeatMode), inline: true },
-            { name: 'Autoplay', value: isAutoplayEnabled(queue) ? 'On' : 'Off', inline: true },
-            { name: 'Shuffle', value: queue.isShuffling ? 'On' : 'Off', inline: true },
-            { name: 'Effects', value: getEffectLabel(queue), inline: true },
+            {
+                name: '👤 Requested By',
+                value: currentTrack.requestedBy ? `${currentTrack.requestedBy}` : 'Unknown',
+                inline: true,
+            },
+            { name: '⏱️ Music Duration', value: currentTrack.duration || 'Live', inline: true },
+            { name: '🎙️ Music Author', value: truncate(currentTrack.author || 'Unknown Artist', 64), inline: true },
         );
 
     if (currentTrack.thumbnail) {
@@ -343,7 +497,7 @@ async function syncControlPanel(queue: GuildQueue<PlaybackMetadata>, sendIfMissi
     if (!metadata) return;
 
     const payload = {
-        embeds: [buildControlEmbed(queue)],
+        embeds: [buildPrimaryControlEmbed(queue)],
         components: buildControls(queue),
     };
 
@@ -1251,10 +1405,21 @@ export async function handlePlaybackInteraction(
                 } else {
                     queue.node.pause();
                 }
-            } else if (action === 'seek_back') {
-                await seekBy(queue, -SEEK_STEP_MS);
-            } else if (action === 'seek_forward') {
-                await seekBy(queue, SEEK_STEP_MS);
+            } else if (action === 'previous') {
+                if (queue.history.disabled || queue.history.isEmpty()) {
+                    throw new Error('There is no previous track in history.');
+                }
+
+                await queue.history.previous(true);
+            } else if (action === 'next') {
+                if (getQueueTracks(queue).length === 0) {
+                    throw new Error('There is no next track in the queue.');
+                }
+
+                const skipped = queue.node.skip();
+                if (!skipped) {
+                    throw new Error('Could not skip to the next track.');
+                }
             } else if (action === 'volume_down') {
                 changeVolumeBy(queue, -VOLUME_STEP);
             } else if (action === 'volume_up') {
