@@ -36,7 +36,6 @@ const EMOJI_NEXT = '1486104242417832006';
 const EMOJI_PLAY = '1486104239511044326';
 const EMOJI_PAUSE = '1486104243890028594';
 const EMOJI_STOP = '1486104254652616896';
-const EMOJI_SHUFFLE = '1486104263938801874';
 const EMOJI_LOOP_TRACK = '1486104266522493060';
 const EMOJI_LOOP_QUEUE = '1486110000290988063';
 const EMOJI_AUTOPLAY = '1486109960973844512';
@@ -52,9 +51,6 @@ const EMOJI_NIGHTCORE = '1486104289750286458';
 const EMOJI_8D = '1486109951133745212';
 const EMOJI_CLEAR = '\u{1F9F9}';
 
-const ICON_QUEUE_MOVE_UP = '1486117064371343535';
-const ICON_QUEUE_MOVE_DOWN = '1486117062702006374';
-const ICON_QUEUE_REMOVE = '1486412564681195571';
 const ICON_PAGE_PREV = '1486117061548703794';
 const ICON_PAGE_NEXT = '1486117059711729785';
 const TEXT_ICON_ARTIST = 'artist:1486104236562317474';
@@ -194,10 +190,6 @@ function getLoopButtonLabel(mode: number) {
 function getLoopEmoji(mode: number) {
     if (mode === QueueRepeatMode.TRACK) return EMOJI_LOOP_TRACK;
     return EMOJI_LOOP_QUEUE;
-}
-
-function getShuffleButtonLabel(enabled: boolean) {
-    return enabled ? 'Shuffle On' : 'Shuffle Off';
 }
 
 function getRepeatLabel(mode: number) {
@@ -418,7 +410,6 @@ function buildControls(queue: GuildQueue<PlaybackMetadata>) {
             createControlButton(`${CONTROL_PREFIX}:volume_up`, 'Up', EMOJI_VOLUME_UP, !hasPlayableContext),
         ),
         new ActionRowBuilder<ButtonBuilder>().addComponents(
-            createControlButton(`${CONTROL_PREFIX}:shuffle`, getShuffleButtonLabel(queue.isShuffling), EMOJI_SHUFFLE, !hasTrack || queueTracks.length === 0),
             createControlButton(`${CONTROL_PREFIX}:loop`, getLoopButtonLabel(queue.repeatMode), getLoopEmoji(queue.repeatMode), !hasTrack),
             createControlButton(`${CONTROL_PREFIX}:stop`, 'Stop', EMOJI_STOP, !hasTrack && queueTracks.length === 0),
             createControlButton(`${CONTROL_PREFIX}:autoplay`, isAutoplayEnabled(queue) ? 'Autoplay On' : 'Autoplay Off', EMOJI_AUTOPLAY, !hasTrack),
@@ -519,7 +510,6 @@ function buildMoreMenuPayload(queue: GuildQueue<PlaybackMetadata>) {
         ],
         components: [
             new ActionRowBuilder<ButtonBuilder>().addComponents(
-                createControlButton(`${PANEL_PREFIX}:queue:open`, 'Queue', EMOJI_QUEUE),
                 createControlButton(`${PANEL_PREFIX}:lyrics:open`, 'Lyrics', EMOJI_LYRICS, !currentTrack),
                 createControlButton(`${PANEL_PREFIX}:effects:open`, 'Effects', EMOJI_EFFECTS, !currentTrack),
                 createControlButton(`${PANEL_PREFIX}:favorites:open:0:0`, 'Favorites', EMOJI_FAVORITES),
@@ -534,82 +524,6 @@ function buildClosedPanelPayload() {
         content: 'Extra controls closed.',
         embeds: [],
         components: [],
-    };
-}
-
-function buildQueueManagerPayload(queue: GuildQueue<PlaybackMetadata>, page: number, selectedIndex: number) {
-    const tracks = getQueueTracks(queue);
-    const state = normalizeSelection(tracks.length, page, selectedIndex, PAGE_SIZE);
-    const currentTrack = queue.currentTrack;
-    const totalPages = Math.max(1, Math.ceil(Math.max(tracks.length, 1) / PAGE_SIZE));
-    const pageStart = state.page * PAGE_SIZE;
-    const pageTracks = tracks.slice(pageStart, pageStart + PAGE_SIZE);
-    const selectedTrack = state.selectedIndex >= 0 ? tracks[state.selectedIndex] : null;
-
-    const list = pageTracks.length > 0
-        ? pageTracks.map((track, index) => {
-            const absoluteIndex = pageStart + index;
-            const marker = absoluteIndex === state.selectedIndex ? '>' : ' ';
-            return `${marker} ${absoluteIndex + 1}. **${truncate(track.title, 48)}**\n   ${truncate(track.author || 'Unknown Artist', 28)} - ${track.duration || 'Live'}`;
-        }).join('\n')
-        : 'Queue is empty.';
-
-    const components: Array<ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>> = [
-        new ActionRowBuilder<ButtonBuilder>().addComponents(
-            createIconButton(`${PANEL_PREFIX}:queue:page:-1:${state.page}:${state.selectedIndex}`, ICON_PAGE_PREV, state.page === 0 || tracks.length === 0),
-            createIconButton(`${PANEL_PREFIX}:queue:move:-1:${state.page}:${state.selectedIndex}`, ICON_QUEUE_MOVE_UP, state.selectedIndex <= 0),
-            createIconButton(`${PANEL_PREFIX}:queue:remove:${state.page}:${state.selectedIndex}`, ICON_QUEUE_REMOVE, state.selectedIndex < 0),
-            createIconButton(`${PANEL_PREFIX}:queue:move:1:${state.page}:${state.selectedIndex}`, ICON_QUEUE_MOVE_DOWN, state.selectedIndex < 0 || state.selectedIndex >= tracks.length - 1),
-            createIconButton(`${PANEL_PREFIX}:queue:page:1:${state.page}:${state.selectedIndex}`, ICON_PAGE_NEXT, state.page >= totalPages - 1 || tracks.length === 0),
-        ),
-        new ActionRowBuilder<ButtonBuilder>().addComponents(
-            createControlButton(`${PANEL_PREFIX}:menu`, 'Back', EMOJI_MORE),
-        ),
-    ];
-
-    if (pageTracks.length > 0) {
-        components.push(
-            new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
-                new StringSelectMenuBuilder()
-                    .setCustomId(`${PANEL_PREFIX}:queue:select:${state.page}:${state.selectedIndex}`)
-                    .setPlaceholder('Select a track')
-                    .addOptions(
-                        pageTracks.map((track, index) => {
-                            const absoluteIndex = pageStart + index;
-                            return {
-                                label: `${absoluteIndex + 1}. ${truncate(track.title, 90)}`,
-                                description: truncate(`${track.author || 'Unknown Artist'} - ${track.duration || 'Live'}`, 100),
-                                value: String(absoluteIndex),
-                                default: absoluteIndex === state.selectedIndex,
-                            };
-                        }),
-                    ),
-            ),
-        );
-    }
-
-    return {
-        embeds: [
-            new EmbedBuilder()
-                .setColor(EMBED_COLOR)
-                .setTitle('Queue')
-                .setDescription([
-                    `Now playing: ${currentTrack ? `**${truncate(currentTrack.title, 56)}**` : 'Nothing'}`,
-                    '',
-                    list,
-                ].join('\n'))
-                .addFields(
-                    {
-                        name: 'Selected',
-                        value: selectedTrack
-                            ? `**${truncate(selectedTrack.title, 48)}**\n${truncate(selectedTrack.author || 'Unknown Artist', 32)} - ${selectedTrack.duration || 'Live'}`
-                            : 'No track selected.',
-                        inline: false,
-                    },
-                )
-                .setFooter({ text: `Page ${state.page + 1}/${totalPages} - ${tracks.length} queued` }),
-        ],
-        components,
     };
 }
 
@@ -931,93 +845,6 @@ async function enqueueFavorite(player: Player, queue: GuildQueue<PlaybackMetadat
     return track;
 }
 
-async function handleQueueOpen(interaction: ButtonInteraction, player: Player) {
-    const queue = await ensureSharedVoiceChannel(interaction, player);
-    if (!queue) return true;
-
-    await interaction.update(buildQueueManagerPayload(queue as GuildQueue<PlaybackMetadata>, 0, 0));
-    return true;
-}
-
-async function handleQueueButtonAction(interaction: ButtonInteraction, player: Player) {
-    const queue = await ensureSharedVoiceChannel(interaction, player);
-    if (!queue) return true;
-
-    const [, , panel, action, arg, pageToken, selectedToken] = interaction.customId.split(':');
-    if (panel !== 'queue') return false;
-
-    const page = parseIntToken(pageToken, 0);
-    const selectedIndex = parseIntToken(selectedToken, 0);
-
-    try {
-        if (action === 'page') {
-            const delta = parseIntToken(arg, 0);
-            const tracks = getQueueTracks(queue);
-            const nextPage = clamp(page + delta, 0, Math.max(0, Math.ceil(Math.max(tracks.length, 1) / PAGE_SIZE) - 1));
-            const fallbackSelected = tracks.length === 0 ? -1 : nextPage * PAGE_SIZE;
-
-            await interaction.update(buildQueueManagerPayload(
-                queue as GuildQueue<PlaybackMetadata>,
-                nextPage,
-                selectedIndex >= 0 ? selectedIndex : fallbackSelected,
-            ));
-            return true;
-        }
-
-        if (action === 'move') {
-            const tracks = getQueueTracks(queue);
-            const track = tracks[selectedIndex];
-            if (!track) {
-                await interaction.update(buildQueueManagerPayload(queue as GuildQueue<PlaybackMetadata>, page, selectedIndex));
-                return true;
-            }
-
-            const delta = parseIntToken(arg, 0);
-            const targetIndex = clamp(selectedIndex + delta, 0, tracks.length - 1);
-            if (targetIndex !== selectedIndex) {
-                queue.moveTrack(track, targetIndex);
-            }
-
-            await interaction.update(buildQueueManagerPayload(queue as GuildQueue<PlaybackMetadata>, Math.floor(targetIndex / PAGE_SIZE), targetIndex));
-            void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false);
-            return true;
-        }
-
-        if (action === 'remove') {
-            const tracks = getQueueTracks(queue);
-            const track = tracks[selectedIndex];
-            if (track) {
-                queue.removeTrack(track);
-            }
-
-            const updatedTracks = getQueueTracks(queue);
-            const nextSelectedIndex = updatedTracks.length === 0 ? -1 : Math.min(selectedIndex, updatedTracks.length - 1);
-            const nextPage = nextSelectedIndex < 0 ? 0 : Math.floor(nextSelectedIndex / PAGE_SIZE);
-
-            await interaction.update(buildQueueManagerPayload(queue as GuildQueue<PlaybackMetadata>, nextPage, nextSelectedIndex));
-            void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, false);
-            return true;
-        }
-    } catch (error) {
-        const message = error instanceof Error ? error.message : 'Could not update the queue.';
-        await interaction.reply({ content: message, flags: MessageFlags.Ephemeral }).catch(() => null);
-        return true;
-    }
-
-    return false;
-}
-
-async function handleQueueSelect(interaction: StringSelectMenuInteraction, player: Player) {
-    const queue = await ensureSharedVoiceChannel(interaction, player);
-    if (!queue) return true;
-
-    const selectedIndex = Number.parseInt(interaction.values[0] ?? '-1', 10);
-    const nextPage = selectedIndex < 0 ? 0 : Math.floor(selectedIndex / PAGE_SIZE);
-
-    await interaction.update(buildQueueManagerPayload(queue as GuildQueue<PlaybackMetadata>, nextPage, selectedIndex));
-    return true;
-}
-
 async function handleLyricsOpen(interaction: ButtonInteraction, player: Player) {
     const queue = await ensureSharedVoiceChannel(interaction, player);
     if (!queue) return true;
@@ -1297,14 +1124,6 @@ export async function handlePlaybackInteraction(
             return true;
         }
 
-        if (interaction.customId === `${PANEL_PREFIX}:queue:open`) {
-            return handleQueueOpen(interaction, player);
-        }
-
-        if (interaction.customId.startsWith(`${PANEL_PREFIX}:queue:`)) {
-            return handleQueueButtonAction(interaction, player);
-        }
-
         if (interaction.customId === `${PANEL_PREFIX}:lyrics:open`) {
             return handleLyricsOpen(interaction, player);
         }
@@ -1384,12 +1203,6 @@ export async function handlePlaybackInteraction(
                 queue.setRepeatMode(cycleRepeatMode(queue.repeatMode));
             } else if (action === 'autoplay') {
                 queue.setRepeatMode(isAutoplayEnabled(queue) ? QueueRepeatMode.OFF : QueueRepeatMode.AUTOPLAY);
-            } else if (action === 'shuffle') {
-                if (getQueueTracks(queue).length === 0) {
-                    throw new Error('There are no queued tracks to shuffle.');
-                }
-
-                queue.toggleShuffle();
             } else {
                 return false;
             }
@@ -1404,10 +1217,6 @@ export async function handlePlaybackInteraction(
     }
 
     if (interaction.isStringSelectMenu()) {
-        if (interaction.customId.startsWith(`${PANEL_PREFIX}:queue:`)) {
-            return handleQueueSelect(interaction, player);
-        }
-
         if (interaction.customId.startsWith(`${PANEL_PREFIX}:favorites:`)) {
             return handleFavoritesSelect(interaction, player);
         }
