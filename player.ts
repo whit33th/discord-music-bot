@@ -4,7 +4,7 @@ import type { Client } from 'discord.js';
 import fs from 'node:fs';
 import { YoutubeSabrExtractor } from 'discord-player-googlevideo';
 import { YoutubeiExtractor } from 'discord-player-youtubei';
-import youtubedl from 'youtube-dl-exec';
+import youtubedl, { create as createYoutubeDl } from 'youtube-dl-exec';
 import { logStreamExtracted } from './telemetry.js';
 
 const DEFAULT_YOUTUBE_STREAM_HIGH_WATER_MARK = 1 << 25;
@@ -14,8 +14,13 @@ function getYoutubeStreamHighWaterMark() {
     return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_YOUTUBE_STREAM_HIGH_WATER_MARK;
 }
 
-function createYoutubeDlStream(url: string, cookieFile?: string) {
-    const process = youtubedl.exec(url, {
+function getYoutubeDlBinaryPath() {
+    return process.env.YOUTUBE_DL_PATH?.trim() || (youtubedl as any).constants?.YOUTUBE_DL_PATH as string | undefined;
+}
+
+function createYoutubeDlStream(url: string, cookieFile: string | undefined, youtubeDlBinaryPath: string) {
+    const youtubeDlClient = createYoutubeDl(youtubeDlBinaryPath);
+    const process = youtubeDlClient.exec(url, {
         format: 'bestaudio',
         output: '-',
         noWarnings: true,
@@ -52,7 +57,7 @@ export async function createPlayer(client: Client) {
     const youtubeiUseDl = (process.env.YOUTUBE_USE_YTDL ?? 'false').toLowerCase() === 'true';
     const youtubeCookie = process.env.YOUTUBE_COOKIE;
     const ytDlpCookieFile = process.env.YTDLP_COOKIE_FILE;
-    const youtubeDlPath = (youtubedl as any).constants?.YOUTUBE_DL_PATH as string | undefined;
+    const youtubeDlPath = getYoutubeDlBinaryPath();
     const hasYoutubeDlBinary = Boolean(youtubeDlPath && fs.existsSync(youtubeDlPath));
     const hasYtDlpCookieFile = Boolean(ytDlpCookieFile && fs.existsSync(ytDlpCookieFile));
     const youtubeStreamHighWaterMark = getYoutubeStreamHighWaterMark();
@@ -76,7 +81,11 @@ export async function createPlayer(client: Client) {
 
         if (youtubeiUseDl && hasYoutubeDlBinary) {
             youtubeiOptions.createStream = (track: Track) =>
-                Promise.resolve(createYoutubeDlStream(track.url, hasYtDlpCookieFile ? ytDlpCookieFile : undefined));
+                Promise.resolve(createYoutubeDlStream(
+                    track.url,
+                    hasYtDlpCookieFile ? ytDlpCookieFile : undefined,
+                    youtubeDlPath!,
+                ));
             if (!hasYtDlpCookieFile) {
                 console.warn('[audio] yt-dlp is enabled without YTDLP_COOKIE_FILE, YouTube may require sign-in cookies');
             }
