@@ -503,7 +503,7 @@ function buildControls(queue: GuildQueue<PlaybackMetadata>) {
       ),
       createControlButton(
         `${CONTROL_PREFIX}:more`,
-        "More",
+        "Moreeeeee",
         EMOJI_MORE,
         !hasPlayableContext,
       ),
