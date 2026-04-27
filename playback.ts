@@ -180,19 +180,11 @@ function isAutoplayEnabled(queue: GuildQueue) {
 
 function getLoopButtonLabel(mode: number) {
     if (mode === QueueRepeatMode.TRACK) return 'Loop Track';
-    if (mode === QueueRepeatMode.QUEUE) return 'Loop Queue';
-    return 'Loop Off';
+    return 'Loop Queue';
 }
 
 function getLoopEmoji(mode: number) {
-    if (mode === QueueRepeatMode.TRACK) return EMOJI_LOOP_TRACK;
-    return EMOJI_LOOP_QUEUE;
-}
-
-function getRepeatLabel(mode: number) {
-    if (mode === QueueRepeatMode.TRACK) return 'Track';
-    if (mode === QueueRepeatMode.QUEUE) return 'Queue';
-    return 'Off';
+    return mode === QueueRepeatMode.TRACK ? EMOJI_LOOP_TRACK : EMOJI_LOOP_QUEUE;
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -675,9 +667,16 @@ function buildFavoritesPanelPayload(queue: GuildQueue<PlaybackMetadata>, favorit
 }
 
 function cycleRepeatMode(mode: number) {
-    if (mode === QueueRepeatMode.TRACK) return QueueRepeatMode.QUEUE;
-    if (mode === QueueRepeatMode.QUEUE) return QueueRepeatMode.OFF;
-    return QueueRepeatMode.TRACK;
+    return mode === QueueRepeatMode.TRACK
+        ? QueueRepeatMode.QUEUE
+        : QueueRepeatMode.TRACK;
+}
+
+function resetTrackPlaybackState(track: Track | null) {
+    if (!track) return;
+
+    track.setResource(null);
+    track.bridgedTrack?.setResource(null);
 }
 
 function parseIntToken(value: string | undefined, fallback: number) {
@@ -1107,6 +1106,16 @@ export function attachPlayerEvents(player: Player) {
         lyricsCache.delete(queue.currentTrack?.url ?? '');
         markPlayerStart(queue, queue.currentTrack);
         void syncControlPanel(queue as GuildQueue<PlaybackMetadata>, true, 'playerStart');
+    });
+
+    player.events.on('playerFinish', (queue, track) => {
+        resetTrackPlaybackState(track);
+        logQueuePlaybackPhase(queue, 'player_finish', {
+            trackTitle: track.title,
+            repeatMode: queue.repeatMode,
+            queueSize: queue.size,
+            historySize: queue.history.size,
+        });
     });
 
     player.events.on('audioTrackAdd', (queue) => {
