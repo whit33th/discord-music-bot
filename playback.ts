@@ -1015,11 +1015,11 @@ function changeVolumeBy(queue: GuildQueue, delta: number) {
 
 async function setEffect(queue: GuildQueue, effect: EffectKey | "clear") {
   if (effect === "clear") {
-    await queue.filters.ffmpeg.setFilters(false);
+    await queue.filters.ffmpeg.setFilters(["normalizer"]);
     return;
   }
 
-  await queue.filters.ffmpeg.setFilters([EFFECT_FILTERS[effect].filter]);
+  await queue.filters.ffmpeg.setFilters(["normalizer", EFFECT_FILTERS[effect].filter]);
 }
 
 async function fadeQueueVolume(
@@ -1502,6 +1502,7 @@ export async function playTrack({
       volume: 100,
       maxHistorySize: 30,
       disableFallbackStream,
+      defaultFFmpegFilters: ["normalizer"],
     },
   });
 
