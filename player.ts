@@ -70,12 +70,12 @@ export async function createPlayer(client: Client) {
         const youtubeiOptions: Record<string, unknown> = {
             cookie: youtubeCookie,
             generateWithPoToken: process.env.YOUTUBE_GENERATE_PO_TOKEN === 'true',
-            disablePlayer: true,
-            overrideBridgeMode: process.env.BRIDGE_MODE ?? 'ytm',
+            overrideBridgeMode: process.env.BRIDGE_MODE ?? 'yt',
             streamOptions: {
                 useClient: 'ANDROID',
                 highWaterMark: youtubeStreamHighWaterMark,
             },
+            disablePlayer: true,
             logLevel: 'NONE',
         };
 
